@@ -2259,7 +2259,8 @@ static int meth_delete(struct transaction_t *txn)
 
     /* Open mailbox for writing */
     if ((r = mailbox_open_iwl(mailboxname, &mailbox))) {
-	syslog(LOG_INFO, "mailbox_open_iwl() failed: %s", error_message(r));
+	syslog(LOG_ERR, "mailbox_open_iwl(%s) failed: %s",
+	       mailboxname, error_message(r));
 	*txn->errstr = error_message(r);
 	ret = HTTP_SERVER_ERROR;
 	goto done;
@@ -2298,7 +2299,8 @@ static int meth_delete(struct transaction_t *txn)
     record.system_flags |= FLAG_EXPUNGED;
 
     if ((r = mailbox_rewrite_index_record(mailbox, &record))) {
-	syslog(LOG_INFO, "rewrite_index_rec() failed: %s", error_message(r));
+	syslog(LOG_ERR, "rewrite_index_rec(%s) failed: %s",
+	       mailboxname, error_message(r));
 	*txn->errstr = error_message(r);
 	ret = HTTP_SERVER_ERROR;
 	goto done;
@@ -2344,8 +2346,8 @@ static int meth_get(struct transaction_t *txn)
 
 	/* Open mailbox for reading */
 	if ((r = mailbox_open_irl(mailboxname, &mailbox))) {
-	    syslog(LOG_INFO, "mailbox_open_irl() failed: %s",
-		   error_message(r));
+	    syslog(LOG_ERR, "mailbox_open_irl(%s) failed: %s",
+		   mailboxname, error_message(r));
 	    *txn->errstr = error_message(r);
 	    ret = HTTP_SERVER_ERROR;
 	    goto done;
@@ -2793,7 +2795,7 @@ static int meth_proppatch(struct transaction_t *txn)
 
     /* Add a response tree to 'root' for the specified href */
     resp = xmlNewChild(root, NULL, BAD_CAST "response", NULL);
-    if (!resp) syslog(LOG_INFO, "new child response failed");
+    if (!resp) syslog(LOG_ERR, "new child response failed");
     xmlNewChild(resp, NULL, BAD_CAST "href", BAD_CAST txn->req_tgt.path);
 
     /* Construct mailbox name corresponding to request target URI */
@@ -2910,7 +2912,8 @@ static int meth_put(struct transaction_t *txn)
 
     /* Open mailbox for reading */
     if ((r = mailbox_open_irl(mailboxname, &mailbox))) {
-	syslog(LOG_INFO, "mailbox_open_irl() failed: %s", error_message(r));
+	syslog(LOG_ERR, "mailbox_open_irl(%s) failed: %s",
+	       mailboxname, error_message(r));
 	*txn->errstr = error_message(r);
 	ret = HTTP_SERVER_ERROR;
 	goto done;
@@ -3085,8 +3088,8 @@ static int meth_put(struct transaction_t *txn)
 		    /* Perform the actual expunge */
 		    expunge->system_flags |= FLAG_EXPUNGED;
 		    if ((r = mailbox_rewrite_index_record(mailbox, expunge))) {
-			syslog(LOG_INFO, "rewrite_index_rec() failed: %s",
-			       error_message(r));
+			syslog(LOG_ERR, "rewrite_index_rec(%s) failed: %s",
+			       mailboxname, error_message(r));
 			*txn->errstr = error_message(r);
 			ret = HTTP_SERVER_ERROR;
 			goto done;
@@ -3198,7 +3201,8 @@ static int meth_report(struct transaction_t *txn)
 
     /* Open mailbox for reading */
     if ((r = mailbox_open_irl(mailboxname, &mailbox))) {
-	syslog(LOG_INFO, "mailbox_open_irl() failed: %s", error_message(r));
+	syslog(LOG_ERR, "mailbox_open_irl(%s) failed: %s",
+	       mailboxname, error_message(r));
 	*txn->errstr = error_message(r);
 	ret = HTTP_SERVER_ERROR;
 	goto done;
