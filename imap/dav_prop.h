@@ -84,7 +84,6 @@ struct proppatch_ctx {
     const char *mailboxname;		/* mailbox correspondng to collection */
     xmlNodePtr root;			/* root node to add to XML tree */
     xmlNsPtr *ns;			/* Array of our supported namespaces */
-    struct txn *tid;			/* Transaction ID for annot writes */
     const char **errstr;		/* Error string to pass up to caller */
     int *ret;  				/* Return code to pass up to caller */
 };

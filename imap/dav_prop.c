@@ -299,7 +299,7 @@ static int proppatch_todb(xmlNodePtr prop, unsigned set,
 {
     char prop_annot[MAX_MAILBOX_PATH+1];
     xmlChar *freeme = NULL;
-    const char *value;
+    struct buf value = BUF_INITIALIZER;
     xmlNodePtr node;
     int r;
 
@@ -313,12 +313,13 @@ static int proppatch_todb(xmlNodePtr prop, unsigned set,
 		strhash((const char *) ns->href), BAD_CAST prop->name);
     }
 
-    if (set) freeme = xmlNodeGetContent(prop);
-    value = freeme ? (const char *) freeme : "";
+    if (set) {
+	freeme = xmlNodeGetContent(prop);
+	buf_init_ro(&value, (const char *) freeme, xmlStrlen(freeme));
+    }
 
-    if (!(r = annotatemore_write_entry(pctx->mailboxname, prop_annot, "",
-				       value, NULL, strlen(value), 0,
-				       &pctx->tid))) {
+    if (!(r = annotatemore_write_entry(pctx->mailboxname, 0, prop_annot,
+				       /* shared */ "", &value))) {
 	node = add_prop(HTTP_OK, pctx->root, &propstat[PROPSTAT_OK],
 			ns, prop->name, NULL, NULL);
     }
@@ -341,7 +342,7 @@ static int propfind_fromdb(const xmlChar *propname, xmlNsPtr ns,
 			   xmlNodePtr *propstat, void *ns_prefix)
 {
     char prop_annot[MAX_MAILBOX_PATH+1];
-    struct annotation_data attrib;
+    struct buf attrib = BUF_INITIALIZER;
     xmlNodePtr node;
     const char *value = NULL;
 
@@ -356,9 +357,10 @@ static int propfind_fromdb(const xmlChar *propname, xmlNsPtr ns,
     }
 
     if (fctx->mailbox && !fctx->record) {
-	if (!annotatemore_lookup(fctx->mailbox->name, prop_annot, "", &attrib)
-	    && attrib.value) {
-	    value = attrib.value;
+	if (!annotatemore_lookup(fctx->mailbox->name, prop_annot,
+				 /* shared */ "", &attrib)
+	    && attrib.s) {
+	    value = buf_cstring(&attrib);
 	}
 	else if (!xmlStrcmp(propname, BAD_CAST "displayname")) {
 	    /* Special case empty displayname -- use last segment of path */
@@ -788,6 +790,9 @@ int preload_proplist(xmlNodePtr proplist, struct propfind_entry_list **list)
 int do_proppatch(struct proppatch_ctx *pctx, xmlNodePtr instr,
 		 xmlNodePtr *propstat)
 {
+    /* Begin transaction */
+    if (annotatemore_begin()) return HTTP_SERVER_ERROR;
+
     /* Iterate through propertyupdate children */
     for (; instr; instr = instr->next) {
 	if (instr->type == XML_ELEMENT_NODE) {

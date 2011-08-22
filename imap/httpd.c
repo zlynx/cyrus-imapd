@@ -425,8 +425,8 @@ int service_init(int argc __attribute__((unused)),
     denydb_open(NULL);
 
     /* open annotations.db, we'll need it for collection properties */
-    annotatemore_init(0, NULL, NULL);
-    annotatemore_open(NULL);
+    annotatemore_init(NULL, NULL);
+    annotatemore_open();
 
     /* setup for sending IMAP IDLE notifications */
     idle_enabled();
@@ -2076,7 +2076,8 @@ static int meth_copy(struct transaction_t *txn)
     /* Prepare to append source resource to destination mailbox */
     if ((r = append_setup(&appendstate, dest_mboxname, 
 			  httpd_userid, httpd_authstate, ACL_INSERT,
-			  (txn->meth[0]) == 'C' ? (long) src_rec.size : -1))) {
+			  (txn->meth[0]) == 'C' ? (long) src_rec.size : -1,
+			  &httpd_namespace, httpd_userisadmin))){
 	syslog(LOG_ERR, "append_setup(%s) failed: %s",
 	       dest_mboxname, error_message(r));
 	ret = HTTP_SERVER_ERROR;
@@ -2551,7 +2552,6 @@ static int meth_mkcol(struct transaction_t *txn)
 	pctx.mailboxname = mailboxname;
 	pctx.root = root;
 	pctx.ns = ns;
-	pctx.tid = NULL;
 	pctx.errstr = txn->errstr;
 	pctx.ret = &r;
 
@@ -2560,7 +2560,7 @@ static int meth_mkcol(struct transaction_t *txn)
 
 	if (ret || r) {
 	    /* Something failed.  Abort the txn and change the OK status */
-	    annotatemore_abort(pctx.tid);
+	    annotatemore_abort();
 
 	    if (!ret) {
 		if (propstat[PROPSTAT_OK]) {
@@ -2591,11 +2591,11 @@ static int meth_mkcol(struct transaction_t *txn)
     if (instr) {
 	if (r) {
 	    /* Failure.  Abort the txn */
-	    annotatemore_abort(pctx.tid);
+	    annotatemore_abort();
 	}
 	else {
 	    /* Success.  Commit the txn */
-	    annotatemore_commit(pctx.tid);
+	    annotatemore_commit();
 	}
     }
 
@@ -2801,7 +2801,6 @@ static int meth_proppatch(struct transaction_t *txn)
     pctx.mailboxname = mailboxname;
     pctx.root = resp;
     pctx.ns = ns;
-    pctx.tid = NULL;
     pctx.errstr = txn->errstr;
     pctx.ret = &r;
 
@@ -2810,7 +2809,7 @@ static int meth_proppatch(struct transaction_t *txn)
 
     if (ret || r) {
 	/* Something failed.  Abort the txn and change the OK status */
-	annotatemore_abort(pctx.tid);
+	annotatemore_abort();
 
 	if (ret) goto done;
 
@@ -2821,7 +2820,7 @@ static int meth_proppatch(struct transaction_t *txn)
     }
     else {
 	/* Success.  Commit the txn */
-	annotatemore_commit(pctx.tid);
+	annotatemore_commit();
     }
 
     /* Output the XML response */
@@ -3017,7 +3016,8 @@ static int meth_put(struct transaction_t *txn)
 
     /* Prepare to append the iMIP message to calendar mailbox */
     if ((r = append_setup(&appendstate, mailboxname, 
-			  httpd_userid, httpd_authstate, ACL_INSERT, size))) {
+			  httpd_userid, httpd_authstate, ACL_INSERT, size,
+			  &httpd_namespace, httpd_userisadmin))) {
 	ret = HTTP_SERVER_ERROR;
 	*txn->errstr = "append_setup() failed";
     }
@@ -3025,7 +3025,7 @@ static int meth_put(struct transaction_t *txn)
 	struct body *body = NULL;
 
 	/* Append the iMIP file to the calendar mailbox */
-	if ((r = append_fromstage(&appendstate, &body, stage, now, NULL, 0))) {
+	if ((r = append_fromstage(&appendstate, &body, stage, now, NULL, 0, NULL))) {
 	    ret = HTTP_SERVER_ERROR;
 	    *txn->errstr = "append_fromstage() failed";
 	}
