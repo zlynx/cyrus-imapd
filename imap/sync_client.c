@@ -576,7 +576,7 @@ static int set_sub(const char *userid, const char *mboxname, int add)
 }
 
 static int folder_setannotation(const char *mboxname, const char *entry,
-				const char *userid, const char *value)
+				const char *userid, const struct buf *value)
 {
     const char *cmd = "ANNOTATION";
     struct dlist *kl;
@@ -585,7 +585,7 @@ static int folder_setannotation(const char *mboxname, const char *entry,
     dlist_setatom(kl, "MBOXNAME", mboxname);
     dlist_setatom(kl, "ENTRY", entry);
     dlist_setatom(kl, "USERID", userid);
-    dlist_setatom(kl, "VALUE", value);
+    dlist_setmap(kl, "VALUE", value->s, value->len);
     sync_send_apply(kl, sync_out);
     dlist_free(&kl);
 
@@ -738,33 +738,49 @@ static int user_sub(const char *userid, const char *mboxname)
 static int copy_local(struct mailbox *mailbox, unsigned long uid)
 {
     uint32_t recno;
-    struct index_record record;
-    char *oldfname, *newfname;
+    struct index_record oldrecord;
     int r;
 
     for (recno = 1; recno <= mailbox->i.num_records; recno++) {
-	r = mailbox_read_index_record(mailbox, recno, &record);
+	r = mailbox_read_index_record(mailbox, recno, &oldrecord);
 	if (r) return r;
-	if (record.uid == uid) {
-	    /* store the old record, expunged */
-	    record.system_flags |= FLAG_EXPUNGED;
-	    r = mailbox_rewrite_index_record(mailbox, &record);
-	    if (r) return r;
 
-	    /* create the new record */
-	    record.system_flags &= ~FLAG_EXPUNGED;
-	    record.uid = mailbox->i.last_uid + 1;
+	/* found the record, renumber it */
+	if (oldrecord.uid == uid) {
+	    char *oldfname, *newfname;
+	    struct index_record newrecord;
+
+	    /* create the new record as a clone of the old record */
+	    newrecord = oldrecord;
+	    newrecord.uid = mailbox->i.last_uid + 1;
 
 	    /* copy the file in to place */
-	    oldfname = xstrdup(mailbox_message_fname(mailbox, uid));
-	    newfname = xstrdup(mailbox_message_fname(mailbox, record.uid));
+	    oldfname = xstrdup(mailbox_message_fname(mailbox, oldrecord.uid));
+	    newfname = xstrdup(mailbox_message_fname(mailbox, newrecord.uid));
 	    r = mailbox_copyfile(oldfname, newfname, 0);
 	    free(oldfname);
 	    free(newfname);
 	    if (r) return r;
 
-	    /* and append the new record (a clone apart from the EXPUNGED flag) */
-	    r = mailbox_append_index_record(mailbox, &record);
+	    /* append the new record */
+	    r = mailbox_append_index_record(mailbox, &newrecord);
+	    if (r) return r;
+
+	    /* Copy across any per-message annotations */
+	    r = annotatemore_begin();
+	    if (r) return r;
+	    r = annotate_msg_copy(mailbox->name, oldrecord.uid,
+				  mailbox->name, newrecord.uid,
+				  NULL);
+	    if (r)
+		annotatemore_abort();
+	    else
+		r = annotatemore_commit();
+	    if (r) return r;
+
+	    /* and expunge the old record */
+	    oldrecord.system_flags |= FLAG_EXPUNGED;
+	    r = mailbox_rewrite_index_record(mailbox, &oldrecord);
 
 	    /* done - return */
 	    return r;
@@ -820,9 +836,10 @@ static int copy_remote(struct mailbox *mailbox, uint32_t uid,
     struct index_record record;
     struct dlist *ki;
     int r;
+    struct sync_annot_list *annots = NULL;
 
     for (ki = kr->head; ki; ki = ki->next) {
-	r = parse_upload(ki, mailbox, &record);
+	r = parse_upload(ki, mailbox, &record, &annots);
 	if (r) return r;
 	if (record.uid == uid) {
 	    /* choose the destination UID */
@@ -831,10 +848,13 @@ static int copy_remote(struct mailbox *mailbox, uint32_t uid,
 	    /* already fetched the file in the parse phase */
 
 	    /* append the file */
-	    r = sync_append_copyfile(mailbox, &record);
+	    r = sync_append_copyfile(mailbox, &record, annots);
+
+	    sync_annot_list_free(&annots);
 
 	    return r;
 	}
+	sync_annot_list_free(&annots);
     }
     /* not finding the record is an error! (should never happen) */
     return IMAP_MAILBOX_NONEXISTENT;
@@ -842,6 +862,7 @@ static int copy_remote(struct mailbox *mailbox, uint32_t uid,
 
 static int copyback_one_record(struct mailbox *mailbox,
 			       struct index_record *rp,
+			       const struct sync_annot_list *annots,
 			       struct dlist *kaction)
 {
     int r;
@@ -879,7 +900,7 @@ static int copyback_one_record(struct mailbox *mailbox,
 	/* make sure we're actually making changes now */
 	if (!kaction) return 0;
 	/* append the file */
-	r = sync_append_copyfile(mailbox, rp);
+	r = sync_append_copyfile(mailbox, rp, annots);
 	if (r) return r;
     }
 
@@ -966,6 +987,8 @@ static void log_mismatch(const char *reason, struct mailbox *mailbox,
 static int compare_one_record(struct mailbox *mailbox,
 			      struct index_record *mp,
 			      struct index_record *rp,
+			      const struct sync_annot_list *mannots,
+			      const struct sync_annot_list *rannots,
 			      struct dlist *kaction)
 {
     int diff = 0;
@@ -1017,12 +1040,13 @@ static int compare_one_record(struct mailbox *mailbox,
 
 		/* ORDERING - always lower GUID first */
 		if (message_guid_cmp(&mp->guid, &rp->guid) > 0) {
-		    r = copyback_one_record(mailbox, rp, kaction);
+		    r = copyback_one_record(mailbox, rp, rannots, kaction);
 		    if (!r) r = renumber_one_record(mp, kaction);
 		}
 		else {
 		    r = renumber_one_record(mp, kaction);
-		    if (!r) r = copyback_one_record(mailbox, rp, kaction);
+		    if (!r) r = copyback_one_record(mailbox, rp,
+						    rannots, kaction);
 		}
 
 		return r;
@@ -1037,9 +1061,19 @@ static int compare_one_record(struct mailbox *mailbox,
 		    mp->user_flags[i] = rp->user_flags[i];
 
 		log_mismatch("more recent on replica", mailbox, mp, rp);
+
+		if (kaction) {
+		    r = apply_annotations(mailbox, mp, mannots, rannots, 0);
+		    if (r) return r;
+		}
 	    }
 	    else {
 		log_mismatch("more recent on master", mailbox, mp, rp);
+
+		if (kaction) {
+		    r = apply_annotations(mailbox, mp, mannots, rannots, 1);
+		    if (r) return r;
+		}
 	    }
 	}
 
@@ -1065,24 +1099,33 @@ static int mailbox_update_loop(struct mailbox *mailbox,
     struct index_record rrecord;
     uint32_t recno = 1;
     uint32_t old_num_records = mailbox->i.num_records;
+    struct sync_annot_list *mannots = NULL;
+    struct sync_annot_list *rannots = NULL;
     int r;
 
     /* while there are more records on either master OR replica,
      * work out what to do with them */
     while (ki || recno <= old_num_records) {
+
+	sync_annot_list_free(&mannots);
+	sync_annot_list_free(&rannots);
+
 	/* most common case - both a master AND a replica record exist */
 	if (ki && recno <= old_num_records) {
 	    r = mailbox_read_index_record(mailbox, recno, &mrecord);
-	    if (r) return r;
-	    r = parse_upload(ki, mailbox, &rrecord);
-	    if (r) return r;
+	    if (r) goto out;
+	    r = read_annotations(mailbox, &mrecord, &mannots);
+	    if (r) goto out;
+	    r = parse_upload(ki, mailbox, &rrecord, &rannots);
+	    if (r) goto out;
 
 	    /* same UID - compare the records */
 	    if (rrecord.uid == mrecord.uid) {
 		r = compare_one_record(mailbox,
 				       &mrecord, &rrecord,
+				       mannots, rannots,
 				       kaction);
-		if (r) return r;
+		if (r) goto out;
 		/* increment both */
 		recno++;
 		ki = ki->next;
@@ -1094,7 +1137,7 @@ static int mailbox_update_loop(struct mailbox *mailbox,
 			   mailbox->name, mrecord.uid,
 			   message_guid_encode(&mrecord.guid));
 		    r = renumber_one_record(&mrecord, kaction);
-		    if (r) return r;
+		    if (r) goto out;
 		}
 		/* only increment master */
 		recno++;
@@ -1106,8 +1149,8 @@ static int mailbox_update_loop(struct mailbox *mailbox,
 			syslog(LOG_ERR, "SYNCERROR: only exists on replica %s %u (%s)",
 			       mailbox->name, rrecord.uid,
 			       message_guid_encode(&rrecord.guid));
-		    r = copyback_one_record(mailbox, &rrecord, kaction);
-		    if (r) return r;
+		    r = copyback_one_record(mailbox, &rrecord, rannots, kaction);
+		    if (r) goto out;
 		}
 		/* only increment replica */
 		ki = ki->next;
@@ -1117,12 +1160,12 @@ static int mailbox_update_loop(struct mailbox *mailbox,
 	/* no more replica records, but still master records */
 	else if (recno <= old_num_records) {
 	    r = mailbox_read_index_record(mailbox, recno, &mrecord);
-	    if (r) return r;
+	    if (r) goto out;
 	    /* if the replica has seen this UID, we need to renumber.
 	     * Otherwise it will replicate fine as-is */
 	    if (mrecord.uid <= last_uid) {
 		r = renumber_one_record(&mrecord, kaction);
-		if (r) return r;
+		if (r) goto out;
 	    }
 	    else if (mrecord.modseq <= highestmodseq) {
 		if (kaction) {
@@ -1130,7 +1173,7 @@ static int mailbox_update_loop(struct mailbox *mailbox,
 		    syslog(LOG_NOTICE, "SYNCNOTICE: bumping modseq %s %u",
 			   mailbox->name, mrecord.uid);
 		    r = mailbox_rewrite_index_record(mailbox, &mrecord);
-		    if (r) return r;
+		    if (r) goto out;
 		}
 	    }
 	    recno++;
@@ -1138,22 +1181,26 @@ static int mailbox_update_loop(struct mailbox *mailbox,
 
 	/* record only exists on the replica */
 	else {
-	    r = parse_upload(ki, mailbox, &rrecord);
-	    if (r) return r;
+	    r = parse_upload(ki, mailbox, &rrecord, &rannots);
+	    if (r) goto out;
 
 	    if (kaction)
 		syslog(LOG_NOTICE, "SYNCNOTICE: only on replica %s %u",
 		       mailbox->name, rrecord.uid);
 
 	    /* going to need this one */
-	    r = copyback_one_record(mailbox, &rrecord, kaction);
-	    if (r) return r;
+	    r = copyback_one_record(mailbox, &rrecord, rannots, kaction);
+	    if (r) goto out;
 
 	    ki = ki->next;
 	}
     }
+    r = 0;
 
-    return 0;
+out:
+    sync_annot_list_free(&mannots);
+    sync_annot_list_free(&rannots);
+    return r;
 }
 
 static int mailbox_full_update(const char *mboxname)
@@ -1520,12 +1567,13 @@ static int do_quota(const char *root)
 }
 
 static int getannotation_cb(const char *mailbox __attribute__((unused)),
+			    uint32_t uid __attribute__((unused)),
 			    const char *entry, const char *userid,
-			    struct annotation_data *attrib, void *rock)
+			    const struct buf *value, void *rock)
 {
     struct sync_annot_list *l = (struct sync_annot_list *) rock;
 
-    sync_annot_list_add(l, entry, userid, attrib->value);
+    sync_annot_list_add(l, entry, userid, value);
 
     return 0;
 }
@@ -1536,16 +1584,19 @@ static int parse_annotation(struct dlist *kin,
     struct dlist *kl;
     const char *entry;
     const char *userid;
-    const char *value;
+    const char *valmap = NULL;
+    size_t vallen = 0;
+    struct buf value = BUF_INITIALIZER;
 
     for (kl = kin->head; kl; kl = kl->next) {
 	if (!dlist_getatom(kl, "ENTRY", &entry))
 	    return IMAP_PROTOCOL_BAD_PARAMETERS;
 	if (!dlist_getatom(kl, "USERID", &userid))
 	    return IMAP_PROTOCOL_BAD_PARAMETERS;
-	if (!dlist_getatom(kl, "VALUE", &value))
+	if (!dlist_getmap(kl, "VALUE", &valmap, &vallen))
 	    return IMAP_PROTOCOL_BAD_PARAMETERS;
-	sync_annot_list_add(replica_annot, entry, userid, value);
+	buf_init_ro(&value, valmap, vallen);
+	sync_annot_list_add(replica_annot, entry, userid, &value);
     }
 
     return 0;
@@ -1584,7 +1635,7 @@ static int do_annotation(const char *mboxname)
     r = do_getannotation(mboxname, replica_annot);
     if (r) goto bail;
 
-    r = annotatemore_findall(mboxname, "*", &getannotation_cb, master_annot, NULL);
+    r = annotatemore_findall(mboxname, 0, "*", &getannotation_cb, master_annot);
     if (r) goto bail;
 
     /* both lists are sorted, so we work our way through the lists
@@ -1607,7 +1658,7 @@ static int do_annotation(const char *mboxname)
 
 	if (n == 0) {
 	    /* already have the annotation, but is the value different? */
-	    if (!strcmp(ra->value, ma->value)) {
+	    if (!buf_cmp(&ra->value, &ma->value)) {
 		ra = ra->next;
 		ma = ma->next;
 		continue;
@@ -1616,7 +1667,7 @@ static int do_annotation(const char *mboxname)
 	}
 
 	/* add the current client annotation */
-	r = folder_setannotation(mboxname, ma->entry, ma->userid, ma->value);
+	r = folder_setannotation(mboxname, ma->entry, ma->userid, &ma->value);
 	if (r) goto bail;
 
 	ma = ma->next;
@@ -2688,6 +2739,7 @@ void replica_connect(const char *channel)
 		int r;
 		int optval = 1;
 		socklen_t optlen = sizeof(optval);
+		struct protoent *proto = getprotobyname("TCP");
 
 		r = setsockopt(sync_backend->sock, SOL_SOCKET, SO_KEEPALIVE, &optval, optlen);
 		if (r < 0) {
@@ -2696,7 +2748,7 @@ void replica_connect(const char *channel)
 #ifdef TCP_KEEPCNT
 		optval = config_getint(IMAPOPT_TCP_KEEPALIVE_CNT);
 		if (optval) {
-		    r = setsockopt(sync_backend->sock, SOL_TCP, TCP_KEEPCNT, &optval, optlen);
+		    r = setsockopt(sync_backend->sock, proto->p_proto, TCP_KEEPCNT, &optval, optlen);
 		    if (r < 0) {
 			syslog(LOG_ERR, "unable to setsocketopt(TCP_KEEPCNT): %m");
 		    }
@@ -2705,7 +2757,7 @@ void replica_connect(const char *channel)
 #ifdef TCP_KEEPIDLE
 		optval = config_getint(IMAPOPT_TCP_KEEPALIVE_IDLE);
 		if (optval) {
-		    r = setsockopt(sync_backend->sock, SOL_TCP, TCP_KEEPIDLE, &optval, optlen);
+		    r = setsockopt(sync_backend->sock, proto->p_proto, TCP_KEEPIDLE, &optval, optlen);
 		    if (r < 0) {
 			syslog(LOG_ERR, "unable to setsocketopt(TCP_KEEPIDLE): %m");
 		    }
@@ -2714,7 +2766,7 @@ void replica_connect(const char *channel)
 #ifdef TCP_KEEPINTVL
 		optval = config_getint(IMAPOPT_TCP_KEEPALIVE_INTVL);
 		if (optval) {
-		    r = setsockopt(sync_backend->sock, SOL_TCP, TCP_KEEPINTVL, &optval, optlen);
+		    r = setsockopt(sync_backend->sock, proto->p_proto, TCP_KEEPINTVL, &optval, optlen);
 		    if (r < 0) {
 			syslog(LOG_ERR, "unable to setsocketopt(TCP_KEEPINTVL): %m");
 		    }
@@ -2788,6 +2840,10 @@ negfailed:
 	free(algorithm);
 	free(covers);
     }
+
+    /* Force use of LITERAL+ so we don't need two way communications */
+    prot_setisclient(sync_in, 1);
+    prot_setisclient(sync_out, 1);
 }
 
 static void replica_disconnect(void)
@@ -2997,8 +3053,8 @@ int main(int argc, char **argv)
     quotadb_open(NULL);
 
     /* open the annotation db */
-    annotatemore_init(0, NULL, NULL);
-    annotatemore_open(NULL);
+    annotatemore_init(NULL, NULL);
+    annotatemore_open();
 
     signals_set_shutdown(&shut_down);
     signals_add_handlers(0);

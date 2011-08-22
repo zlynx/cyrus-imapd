@@ -186,6 +186,7 @@ struct appendstage {
     strarray_t flags;
     time_t internaldate;
     int binary;
+    struct entryattlist *annotations;
 };
 static ptrarray_t stages = PTRARRAY_INITIALIZER;
 
@@ -305,6 +306,7 @@ struct capa_struct base_capabilities[] = {
     { "THREAD=ORDEREDSUBJECT", 2 },
     { "THREAD=REFERENCES",     2 },
     { "ANNOTATEMORE",          2 },
+    { "ANNOTATE-EXPERIMENT-1", 2 },
     { "METADATA",              2 },
     { "LIST-EXTENDED",         2 },
     { "LIST-STATUS",           2 },
@@ -346,6 +348,9 @@ void cmd_capability(char *tag);
 void cmd_append(char *tag, char *name, const char *cur_name);
 void cmd_select(char *tag, char *cmd, char *name);
 void cmd_close(char *tag, char *cmd);
+static int parse_fetch_args(const char *tag, const char *cmd,
+			    int allow_vanished,
+			    struct fetchargs *fa);
 void cmd_fetch(char *tag, char *sequence, int usinguid);
 void cmd_store(char *tag, char *sequence, int usinguid);
 void cmd_search(char *tag, int usinguid);
@@ -398,23 +403,27 @@ void cmd_compress(char *tag, char *alg);
 void cmd_netscrape(char* tag);
 #endif
 
-void cmd_getannotation(char* tag, char *mboxpat);
-void cmd_getmetadata(char* tag, char *mboxpat);
-void cmd_setannotation(char* tag, char *mboxpat);
-void cmd_setmetadata(char* tag, char *mboxpat);
+static void cmd_getannotation(const char* tag, char *mboxpat);
+static void cmd_getmetadata(const char* tag, char *mboxpat);
+static void cmd_setannotation(const char* tag, char *mboxpat);
+static void cmd_setmetadata(const char* tag, char *mboxpat);
 
 void cmd_enable(char* tag);
 
 int parsecreateargs(struct dlist **extargs);
 
-int getannotatefetchdata(char *tag,
-			 struct strlist **entries, struct strlist **attribs);
-int getmetadatafetchdata(char *tag,
-			 struct strlist **entries, struct strlist **attribs);
-int getannotatestoredata(char *tag, struct entryattlist **entryatts);
-int getmetadatastoredata(char *tag, struct entryattlist **entryatts);
-
-void annotate_response(struct entryattlist *l);
+static int parse_annotate_fetch_data(const char *tag,
+				     int permessage_flag,
+				     strarray_t *entries,
+				     strarray_t *attribs);
+static int parse_metadata_fetch_data(const char *tag,
+				     strarray_t *entries,
+				     strarray_t *attribs);
+static int parse_annotate_store_data(const char *tag,
+				     int permessage_flag,
+				     struct entryattlist **entryatts);
+static int parse_metadata_store_data(const char *tag,
+				     struct entryattlist **entryatts);
 
 int getlistselopts(char *tag, struct listargs *args);
 int getlistretopts(char *tag, struct listargs *args);
@@ -426,6 +435,7 @@ int getsearchcriteria(char *tag, struct searchargs *searchargs,
 			 int *charsetp, int *searchstatep);
 int getsearchdate(time_t *start, time_t *end);
 int getsortcriteria(char *tag, struct sortcrit **sortcrit);
+static char *sortcrit_as_string(const struct sortcrit *sortcrit);
 int getdatetime(time_t *date);
 
 void appendfieldlist(struct fieldlist **l, char *section,
@@ -827,10 +837,10 @@ int service_init(int argc, char **argv, char **envp)
 
     /* Initialize the annotatemore extention */
     if (config_mupdate_server)
-	annotatemore_init(0, annotate_fetch_proxy, annotate_store_proxy);
+	annotatemore_init(annotate_fetch_proxy, annotate_store_proxy);
     else
-	annotatemore_init(0, NULL, NULL);
-    annotatemore_open(NULL);
+	annotatemore_init(NULL, NULL);
+    annotatemore_open();
 
     if (config_getswitch(IMAPOPT_STATUSCACHE)) {
 	statuscache_open(NULL);
@@ -1089,6 +1099,7 @@ void fatal(const char *s, int code)
 	    if (curstage->f != NULL) fclose(curstage->f);
 	    append_removestage(curstage->stage);
 	    strarray_fini(&curstage->flags);
+	    freeentryatts(curstage->annotations);
 	    free(curstage);
 	}
 	ptrarray_fini(&stages);
@@ -2633,7 +2644,7 @@ void cmd_id(char *tag)
 		error = 1;
 		break;
 	    }
-	    if (strlen(arg.s) > MAXIDVALUELEN) {
+	    if (arg.len > MAXIDVALUELEN) {
 		prot_printf(imapd_out,
 			    "%s BAD value longer than %u octets in Id\r\n",
 			    tag, MAXIDVALUELEN);
@@ -2649,7 +2660,7 @@ void cmd_id(char *tag)
 	    }
 	    
 	    /* ok, we're happy enough */
-	    appendattvalue(&params, field.s, arg.s);
+	    appendattvalue(&params, field.s, &arg);
 	}
 
 	if (error || c != ')') {
@@ -2683,12 +2694,12 @@ void cmd_id(char *tag)
 	    /* should we check for and format literals here ??? */
 	    snprintf(logbuf + strlen(logbuf), MAXIDLOGLEN - strlen(logbuf),
 		     " \"%s\" ", pptr->attrib);
-	    if (!strcmp(pptr->value, "NIL"))
+	    if (pptr->value.s == NULL || !strcmp(pptr->value.s, "NIL"))
 		snprintf(logbuf + strlen(logbuf), MAXIDLOGLEN - strlen(logbuf),
 			 "NIL");
 	    else
 		snprintf(logbuf + strlen(logbuf), MAXIDLOGLEN - strlen(logbuf),
-			"\"%s\"", pptr->value);
+			"\"%s\"", pptr->value.s);
 	}
 
 	syslog(LOG_INFO, "client id:%s", logbuf);
@@ -3342,6 +3353,9 @@ void cmd_append(char *tag, char *name, const char *cur_name)
     while (!r && c == ' ') {
 	curstage = xzmalloc(sizeof(*curstage));
 	ptrarray_push(&stages, curstage);
+
+	/* now parsing "append-opts" in the ABNF */
+
 	/* Parse flags */
 	c = getword(imapd_in, &arg);
 	if  (c == '(' && !arg.s[0]) {
@@ -3383,12 +3397,36 @@ void cmd_append(char *tag, char *name, const char *cur_name)
 	    c = getword(imapd_in, &arg);
 	}
 
+	/* try to parse a sequence of "append-ext" */
+	for (;;) {
+	    if (!strcasecmp(arg.s, "ANNOTATION")) {
+		/* RFC5257 */
+		if (c != ' ') {
+		    parseerr = "Missing annotation data in Append command";
+		    r = IMAP_PROTOCOL_ERROR;
+		    goto done;
+		}
+		c = parse_annotate_store_data(tag,
+					      /*permessage_flag*/1,
+					      &curstage->annotations);
+		if (c == EOF) {
+		    eatline(imapd_in, c);
+		    goto cleanup;
+		}
+		c = getword(imapd_in, &arg);
+	    }
+	    else
+		break;	/* not a known extension keyword */
+	}
+
 	/* Stage the message */
 	curstage->f = append_newstage(mailboxname, now, stages.count, &(curstage->stage));
 	if (!curstage->f) {
 	    r = IMAP_IOERROR;
 	    goto done;
 	}
+
+	/* now parsing "append-data" in the ABNF */
 
 	if (!strcasecmp(arg.s, "CATENATE")) {
 	    if (c != ' ' || (c = prot_getc(imapd_in) != '(')) {
@@ -3446,7 +3484,9 @@ void cmd_append(char *tag, char *name, const char *cur_name)
     /* Append from the stage(s) */
     if (!r) {
 	r = append_setup(&appendstate, mailboxname, 
-			 imapd_userid, imapd_authstate, ACL_INSERT, totalsize);
+			 imapd_userid, imapd_authstate, ACL_INSERT, totalsize,
+			 &imapd_namespace,
+			 (imapd_userisadmin || imapd_userisproxyadmin));
     }
     if (!r) {
 	struct body *body;
@@ -3464,9 +3504,16 @@ void cmd_append(char *tag, char *name, const char *cur_name)
 	    if (!r) {
 		r = append_fromstage(&appendstate, &body, curstage->stage,
 				     curstage->internaldate,
-				     &curstage->flags, 0);
+				     &curstage->flags, 0,
+				     curstage->annotations);
 	    }
-	    if (body) message_free_body(body);
+	    if (body) {
+		/* Note: either the calls to message_parse_binary_file()
+		 * or append_fromstage() above, may create a body.  */
+		message_free_body(body);
+		free(body);
+		body = NULL;
+	    }
 	}
 
 	if (!r) {
@@ -3475,15 +3522,6 @@ void cmd_append(char *tag, char *name, const char *cur_name)
 	    append_abort(&appendstate);
 	}
     }
-
-    /* Cleanup the stage(s) */
-    while ((curstage = ptrarray_pop(&stages))) {
-	if (curstage->f != NULL) fclose(curstage->f);
-	append_removestage(curstage->stage);
-	strarray_fini(&curstage->flags);
-	free(curstage);
-    }
-    ptrarray_fini(&stages);
 
     imapd_check(NULL, 1);
 
@@ -3515,6 +3553,17 @@ void cmd_append(char *tag, char *name, const char *cur_name)
 	prot_printf(imapd_out, "%s OK %s\r\n", tag,
 		    error_message(IMAP_OK_COMPLETED));
     }
+
+cleanup:
+    /* Cleanup the stage(s) */
+    while ((curstage = ptrarray_pop(&stages))) {
+	if (curstage->f != NULL) fclose(curstage->f);
+	append_removestage(curstage->stage);
+	strarray_fini(&curstage->flags);
+	freeentryatts(curstage->annotations);
+	free(curstage);
+    }
+    ptrarray_fini(&stages);
 }
 
 /*
@@ -3592,14 +3641,23 @@ void cmd_select(char *tag, char *cmd, char *name)
 		}
 		if (c != ')') goto badqresync;
 		c = prot_getc(imapd_in);
- 	    }
+	    }
+	    else if (!strcmp(arg.s, "ANNOTATE")) {
+		/*
+		 * RFC5257 requires us to parse this keyword, which
+		 * indicates that the client wants unsolicited
+		 * ANNOTATION responses in this session, but we don't
+		 * actually have to do anything with it, so we won't.
+		 */
+		;
+	    }
 	    else {
 		prot_printf(imapd_out, "%s BAD Invalid %s modifier %s\r\n",
 			    tag, cmd, arg.s);
 		eatline(imapd_in, c);
 		return;
 	    }
-	    
+
 	    if (c == ' ') c = getword(imapd_in, &arg);
 	    else break;
 	}
@@ -3763,6 +3821,8 @@ void cmd_select(char *tag, char *cmd, char *name)
 
     if (r) {
 	prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(r));
+	if (init.vanishedlist) seqset_free(init.vanishedlist);
+	init.vanishedlist = NULL;
 	if (doclose) index_close(&imapd_index);
 	return;
     }
@@ -3801,6 +3861,11 @@ void cmd_select(char *tag, char *cmd, char *name)
 	    nextalert = now + 600; /* ALERT every 10 min regardless */
 	}
     }
+
+    index_select(imapd_index, &init);
+
+    if (init.vanishedlist) seqset_free(init.vanishedlist);
+    init.vanishedlist = NULL;
 
     prot_printf(imapd_out, "%s OK [READ-%s] %s\r\n", tag,
 		(imapd_index->myrights & ACL_READ_WRITE) ?
@@ -3871,10 +3936,10 @@ static void section_list_append(struct section **l,
 
     while (*tail) tail = &(*tail)->next;
 
-    *tail = xmalloc(sizeof(struct strlist));
+    *tail = xzmalloc(sizeof(struct section));
     (*tail)->name = xstrdup(name);
     (*tail)->octetinfo = *oi;
-    (*tail)->next = 0;
+    (*tail)->next = NULL;
 }
 
 void section_list_free(struct section *l)
@@ -3924,37 +3989,16 @@ void section_list_free(struct section *l)
 	p++;								\
     }
 
-/*
- * Parse and perform a FETCH/UID FETCH command
- * The command has been parsed up to and including
- * the sequence
- */
-void cmd_fetch(char *tag, char *sequence, int usinguid)
+static int parse_fetch_args(const char *tag, const char *cmd,
+			    int allow_vanished,
+			    struct fetchargs *fa)
 {
-    const char *cmd = usinguid ? "UID Fetch" : "Fetch";
     static struct buf fetchatt, fieldname;
     int c;
     int inlist = 0;
-    int fetchitems = 0;
-    struct fetchargs fetchargs;
+    char *p, *section;
     struct octetinfo oi;
     strarray_t *newfields = strarray_new();
-    char *p, *section;
-    int fetchedsomething, r;
-    clock_t start = clock();
-    char mytime[100];
-
-    if (backend_current) {
-	/* remote mailbox */
-	prot_printf(backend_current->out, "%s %s %s ", tag, cmd, sequence);
-	if (!pipe_command(backend_current, 65536)) {
-	    pipe_including_tag(backend_current, tag, 0);
-	}
-	return;
-    }
-
-    /* local mailbox */
-    memset(&fetchargs, 0, sizeof(struct fetchargs));
 
     c = getword(imapd_in, &fetchatt);
     if (c == '(' && !fetchatt.s[0]) {
@@ -3966,7 +4010,30 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 	switch (fetchatt.s[0]) {
 	case 'A':
 	    if (!inlist && !strcmp(fetchatt.s, "ALL")) {
-		fetchitems |= FETCH_ALL;
+		fa->fetchitems |= FETCH_ALL;
+	    }
+	    else if (!strcmp(fetchatt.s, "ANNOTATION")) {
+		fa->fetchitems |= FETCH_ANNOTATION;
+		if (c != ' ')
+		    goto badannotation;
+		c = prot_getc(imapd_in);
+		if (c != '(')
+		    goto badannotation;
+		c = parse_annotate_fetch_data(tag,
+					      /*permessage_flag*/1,
+					      &fa->entries,
+					      &fa->attribs);
+		if (c == EOF) {
+		    eatline(imapd_in, c);
+		    goto freeargs;
+		}
+		if (c != ')') {
+badannotation:
+		    prot_printf(imapd_out, "%s BAD invalid Annotation\r\n", tag);
+		    eatline(imapd_in, c);
+		    goto freeargs;
+		}
+		c = prot_getc(imapd_in);
 	    }
 	    else goto badatt;
 	    break;
@@ -3986,7 +4053,7 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		    binsize = 1;
 		}
 		else {
-		    fetchitems |= FETCH_SETSEEN;
+		    fa->fetchitems |= FETCH_SETSEEN;
 		}
 		while (Uisdigit(*p) || *p == '.') {
 		    if (*p == '.' && !Uisdigit(p[-1])) break;
@@ -4010,15 +4077,15 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		    goto freeargs;
 		}
 		if (binsize)
-		    section_list_append(&fetchargs.sizesections, section, &oi);
+		    section_list_append(&fa->sizesections, section, &oi);
 		else
-		    section_list_append(&fetchargs.binsections, section, &oi);
+		    section_list_append(&fa->binsections, section, &oi);
 	    }
 	    else if (!strcmp(fetchatt.s, "BODY")) {
-		fetchitems |= FETCH_BODY;
+		fa->fetchitems |= FETCH_BODY;
 	    }
 	    else if (!strcmp(fetchatt.s, "BODYSTRUCTURE")) {
-		fetchitems |= FETCH_BODYSTRUCTURE;
+		fa->fetchitems |= FETCH_BODYSTRUCTURE;
 	    }
 	    else if (!strncmp(fetchatt.s, "BODY[", 5) ||
 		     !strncmp(fetchatt.s, "BODY.PEEK[", 10)) {
@@ -4027,7 +4094,7 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		    p = section += 5;
 		}
 		else {
-		    fetchitems |= FETCH_SETSEEN;
+		    fa->fetchitems |= FETCH_SETSEEN;
 		}
 		while (Uisdigit(*p) || *p == '.') {
 		    if (*p == '.' && !Uisdigit(p[-1])) break;
@@ -4045,7 +4112,7 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		     * the headers out of the cache.
 		     */
 		    if (p != section || p[13] != '\0') {
-			fetchargs.cache_atleast = BIT32_MAX;
+			fa->cache_atleast = BIT32_MAX;
 		    }
 
 		    if (c != ' ') {
@@ -4074,11 +4141,11 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 			    goto freeargs;
 			}
 			strarray_append(newfields, fieldname.s);
-			if (fetchargs.cache_atleast < BIT32_MAX) {
+			if (fa->cache_atleast < BIT32_MAX) {
 			    bit32 this_ver =
 				mailbox_cached_header(fieldname.s);
-			    if(this_ver > fetchargs.cache_atleast)
-				fetchargs.cache_atleast = this_ver;
+			    if(this_ver > fa->cache_atleast)
+				fa->cache_atleast = this_ver;
 			}
 		    } while (c == ' ');
 		    if (c != ')') {
@@ -4103,9 +4170,10 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		    if (*p) {
 			prot_printf(imapd_out, "%s BAD Junk after body section\r\n", tag);
 			eatline(imapd_in, c);
+			strarray_free(newfields);
 			goto freeargs;
 		    }
-		    appendfieldlist(&fetchargs.fsections,
+		    appendfieldlist(&fa->fsections,
 				    section, newfields, fieldname.s,
 				    &oi, sizeof(oi));
 		    newfields = strarray_new();
@@ -4142,62 +4210,62 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		    eatline(imapd_in, c);
 		    goto freeargs;
 		}
-		section_list_append(&fetchargs.bodysections, section, &oi);
+		section_list_append(&fa->bodysections, section, &oi);
 	    }
 	    else goto badatt;
 	    break;
 
 	case 'E':
 	    if (!strcmp(fetchatt.s, "ENVELOPE")) {
-		fetchitems |= FETCH_ENVELOPE;
+		fa->fetchitems |= FETCH_ENVELOPE;
 	    }
 	    else goto badatt;
 	    break;
 
 	case 'F':
 	    if (!inlist && !strcmp(fetchatt.s, "FAST")) {
-		fetchitems |= FETCH_FAST;
+		fa->fetchitems |= FETCH_FAST;
 	    }
 	    else if (!inlist && !strcmp(fetchatt.s, "FULL")) {
-		fetchitems |= FETCH_FULL;
+		fa->fetchitems |= FETCH_FULL;
 	    }
 	    else if (!strcmp(fetchatt.s, "FLAGS")) {
-		fetchitems |= FETCH_FLAGS;
+		fa->fetchitems |= FETCH_FLAGS;
 	    }
 	    else goto badatt;
 	    break;
 
 	case 'I':
 	    if (!strcmp(fetchatt.s, "INTERNALDATE")) {
-		fetchitems |= FETCH_INTERNALDATE;
+		fa->fetchitems |= FETCH_INTERNALDATE;
 	    }
 	    else goto badatt;
 	    break;
 
 	case 'M':
 	    if (!strcmp(fetchatt.s, "MODSEQ")) {
-		fetchitems |= FETCH_MODSEQ;
+		fa->fetchitems |= FETCH_MODSEQ;
 	    }
 	    else goto badatt;
 	    break;
 	case 'R':
 	    if (!strcmp(fetchatt.s, "RFC822")) {
-		fetchitems |= FETCH_RFC822|FETCH_SETSEEN;
+		fa->fetchitems |= FETCH_RFC822|FETCH_SETSEEN;
 	    }
 	    else if (!strcmp(fetchatt.s, "RFC822.HEADER")) {
-		fetchitems |= FETCH_HEADER;
+		fa->fetchitems |= FETCH_HEADER;
 	    }
 	    else if (!strcmp(fetchatt.s, "RFC822.PEEK")) {
-		fetchitems |= FETCH_RFC822;
+		fa->fetchitems |= FETCH_RFC822;
 	    }
 	    else if (!strcmp(fetchatt.s, "RFC822.SIZE")) {
-		fetchitems |= FETCH_SIZE;
+		fa->fetchitems |= FETCH_SIZE;
 	    }
 	    else if (!strcmp(fetchatt.s, "RFC822.TEXT")) {
-		fetchitems |= FETCH_TEXT|FETCH_SETSEEN;
+		fa->fetchitems |= FETCH_TEXT|FETCH_SETSEEN;
 	    }
 	    else if (!strcmp(fetchatt.s, "RFC822.TEXT.PEEK")) {
-		fetchitems |= FETCH_TEXT;
+		fa->fetchitems |= FETCH_TEXT;
 	    }
 	    else if (!strcmp(fetchatt.s, "RFC822.HEADER.LINES") ||
 		     !strcmp(fetchatt.s, "RFC822.HEADER.LINES.NOT")) {
@@ -4229,16 +4297,16 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		    /* 19 is magic number -- length of 
 		     * "RFC822.HEADERS.NOT" */
 		    strarray_append(strlen(fetchatt.s) == 19 ?
-				  &fetchargs.headers : &fetchargs.headers_not,
+				  &fa->headers : &fa->headers_not,
 				  fieldname.s);
 		    if (strlen(fetchatt.s) != 19) {
-			fetchargs.cache_atleast = BIT32_MAX;
+			fa->cache_atleast = BIT32_MAX;
 		    }
-		    if (fetchargs.cache_atleast < BIT32_MAX) {
+		    if (fa->cache_atleast < BIT32_MAX) {
 			bit32 this_ver =
 			    mailbox_cached_header(fieldname.s);
-			if(this_ver > fetchargs.cache_atleast)
-			    fetchargs.cache_atleast = this_ver;
+			if(this_ver > fa->cache_atleast)
+			    fa->cache_atleast = this_ver;
 		   }
 		} while (c == ' ');
 		if (c != ')') {
@@ -4254,7 +4322,7 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 
 	case 'U':
 	    if (!strcmp(fetchatt.s, "UID")) {
-		fetchitems |= FETCH_UID;
+		fa->fetchitems |= FETCH_UID;
 	    }
 	    else goto badatt;
 	    break;
@@ -4302,7 +4370,7 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		    eatline(imapd_in, c);
 		    goto freeargs;
 		}
-		c = getmodseq(imapd_in, &fetchargs.changedsince);
+		c = getmodseq(imapd_in, &fa->changedsince);
 		if (c == EOF) {
 		    prot_printf(imapd_out,
 				"%s BAD Invalid argument to %s %s\r\n",
@@ -4310,11 +4378,11 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 		    eatline(imapd_in, c);
 		    goto freeargs;
 		}
-		fetchitems |= FETCH_MODSEQ;
+		fa->fetchitems |= FETCH_MODSEQ;
 	    }
-	    else if (usinguid && (imapd_client_capa & CAPA_QRESYNC) &&
+	    else if (allow_vanished &&
 		     !strcmp(fetchatt.s, "VANISHED")) {
-		fetchargs.vanished = 1;
+		fa->vanished = 1;
 	    }
 	    else {
 		prot_printf(imapd_out, "%s BAD Invalid %s modifier %s\r\n",
@@ -4339,19 +4407,19 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 	goto freeargs;
     }
 
-    if (!fetchitems && !fetchargs.bodysections && !fetchargs.fsections &&
-	!fetchargs.binsections && !fetchargs.sizesections &&
-	!fetchargs.headers.count && !fetchargs.headers_not.count) {
+    if (!fa->fetchitems && !fa->bodysections && !fa->fsections &&
+	!fa->binsections && !fa->sizesections &&
+	!fa->headers.count && !fa->headers_not.count) {
 	prot_printf(imapd_out, "%s BAD Missing required argument to %s\r\n", tag, cmd);
 	goto freeargs;
     }
 
-    if (fetchargs.vanished && !fetchargs.changedsince) {
+    if (fa->vanished && !fa->changedsince) {
 	prot_printf(imapd_out, "%s BAD Missing required argument to %s\r\n", tag, cmd);
 	goto freeargs;
     }
 
-    if (fetchitems & FETCH_MODSEQ) {
+    if (fa->fetchitems & FETCH_MODSEQ) {
 	if (!(imapd_client_capa & CAPA_CONDSTORE)) {
 	    imapd_client_capa |= CAPA_CONDSTORE;
 	    prot_printf(imapd_out, "* OK [HIGHESTMODSEQ " MODSEQ_FMT "]  \r\n",
@@ -4359,10 +4427,69 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
 	}
     }
 
-    if (usinguid)
-	fetchitems |= FETCH_UID;
+    if (fa->fetchitems & FETCH_ANNOTATION) {
+	fa->namespace = &imapd_namespace;
+	fa->userid = imapd_userid;
+	fa->isadmin = imapd_userisadmin || imapd_userisproxyadmin;
+	fa->authstate = imapd_authstate;
+    }
 
-    fetchargs.fetchitems = fetchitems;
+    strarray_free(newfields);
+    return 0;
+
+freeargs:
+    strarray_free(newfields);
+    return IMAP_PROTOCOL_BAD_PARAMETERS;
+}
+
+static void fetchargs_fini (struct fetchargs *fa)
+{
+    section_list_free(fa->binsections);
+    section_list_free(fa->sizesections);
+    section_list_free(fa->bodysections);
+    freefieldlist(fa->fsections);
+    strarray_fini(&fa->headers);
+    strarray_fini(&fa->headers_not);
+    strarray_fini(&fa->entries);
+    strarray_fini(&fa->attribs);
+
+    memset(fa, 0, sizeof(struct fetchargs));
+}
+
+/*
+ * Parse and perform a FETCH/UID FETCH command
+ * The command has been parsed up to and including
+ * the sequence
+ */
+void cmd_fetch(char *tag, char *sequence, int usinguid)
+{
+    const char *cmd = usinguid ? "UID Fetch" : "Fetch";
+    struct fetchargs fetchargs;
+    int fetchedsomething, r;
+    clock_t start = clock();
+    char mytime[100];
+
+    if (backend_current) {
+	/* remote mailbox */
+	prot_printf(backend_current->out, "%s %s %s ", tag, cmd, sequence);
+	if (!pipe_command(backend_current, 65536)) {
+	    pipe_including_tag(backend_current, tag, 0);
+	}
+	return;
+    }
+
+    /* local mailbox */
+    memset(&fetchargs, 0, sizeof(struct fetchargs));
+
+    r = parse_fetch_args(tag, cmd,
+			 (usinguid && (imapd_client_capa & CAPA_QRESYNC)),
+			 &fetchargs);
+    if (r)
+	goto freeargs;
+
+    if (usinguid)
+	fetchargs.fetchitems |= FETCH_UID;
+
     r = index_fetch(imapd_index, sequence, usinguid, &fetchargs,
 		&fetchedsomething);
 
@@ -4382,11 +4509,7 @@ void cmd_fetch(char *tag, char *sequence, int usinguid)
     }
 
  freeargs:
-    strarray_free(newfields);
-    section_list_free(fetchargs.bodysections);
-    freefieldlist(fetchargs.fsections);
-    strarray_fini(&fetchargs.headers);
-    strarray_fini(&fetchargs.headers_not);
+    fetchargs_fini(&fetchargs);
 }
 
 #undef PARSE_PARTIAL /* cleanup */
@@ -4404,6 +4527,7 @@ void cmd_store(char *tag, char *sequence, int usinguid)
     int len, c;
     strarray_t flags = STRARRAY_INITIALIZER;
     int flagsparsed = 0, inlist = 0;
+    char *modified = NULL;
     int r;
 
     if (backend_current) {
@@ -4487,13 +4611,30 @@ void cmd_store(char *tag, char *sequence, int usinguid)
     }
     
     if (!strcmp(operation.s, "+flags")) {
-	storeargs.operation = STORE_ADD;
+	storeargs.operation = STORE_ADD_FLAGS;
     }
     else if (!strcmp(operation.s, "-flags")) {
-	storeargs.operation = STORE_REMOVE;
+	storeargs.operation = STORE_REMOVE_FLAGS;
     }
     else if (!strcmp(operation.s, "flags")) {
-	storeargs.operation = STORE_REPLACE;
+	storeargs.operation = STORE_REPLACE_FLAGS;
+    }
+    else if (!strcmp(operation.s, "annotation")) {
+	storeargs.operation = STORE_ANNOTATION;
+	/* ANNOTATION has implicit .SILENT behaviour */
+	storeargs.silent = 1;
+
+	c = parse_annotate_store_data(tag, /*permessage_flag*/1,
+				      &storeargs.entryatts);
+	if (c == EOF) {
+	    eatline(imapd_in, c);
+	    goto freeflags;
+	}
+	storeargs.namespace = &imapd_namespace;
+	storeargs.isadmin = imapd_userisadmin;
+	storeargs.userid = imapd_userid;
+	storeargs.authstate = imapd_authstate;
+	goto notflagsdammit;
     }
     else {
 	prot_printf(imapd_out, "%s BAD Invalid %s attribute\r\n", tag, cmd);
@@ -4561,6 +4702,7 @@ void cmd_store(char *tag, char *sequence, int usinguid)
 	eatline(imapd_in, c);
 	goto freeflags;
     }
+notflagsdammit:
     if (c == '\r') c = prot_getc(imapd_in);
     if (c != '\n') {
 	prot_printf(imapd_out, "%s BAD Unexpected extra arguments to %s\r\n", tag, cmd);
@@ -4577,16 +4719,31 @@ void cmd_store(char *tag, char *sequence, int usinguid)
 
     r = index_store(imapd_index, sequence, usinguid, &storeargs, &flags);
 
-    if (r) {
-	prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(r));
+    /* format the MODIFIED response code */
+    if (storeargs.modified) {
+	char *seqstr = seqset_cstring(storeargs.modified);
+	assert(seqstr);
+	modified = strconcat("[MODIFIED ", seqstr, "] ", (char *)NULL);
+	free(seqstr);
     }
     else {
-	prot_printf(imapd_out, "%s OK %s\r\n", tag,
-		    error_message(IMAP_OK_COMPLETED));
+	modified = xstrdup("");
+    }
+
+    if (r) {
+	prot_printf(imapd_out, "%s NO %s%s\r\n",
+		    tag, modified, error_message(r));
+    }
+    else {
+	prot_printf(imapd_out, "%s OK %s%s\r\n",
+		    tag, modified, error_message(IMAP_OK_COMPLETED));
     }
 
  freeflags:
     strarray_fini(&flags);
+    freeentryatts(storeargs.entryatts);
+    seqset_free(storeargs.modified);
+    free(modified);
 }
 
 void cmd_search(char *tag, int usinguid)
@@ -4708,6 +4865,12 @@ void cmd_sort(char *tag, int usinguid)
     n = index_sort(imapd_index, sortcrit, searchargs, usinguid);
     snprintf(mytime, sizeof(mytime), "%2.3f",
 	     (clock() - start) / (double) CLOCKS_PER_SEC);
+    if (CONFIG_TIMING_VERBOSE) {
+	char *s = sortcrit_as_string(sortcrit);
+	syslog(LOG_DEBUG, "SORT (%s) processing time: %d msg in %s sec",
+	       s, n, mytime);
+	free(s);
+    }
     prot_printf(imapd_out, "%s OK %s (%d msgs in %s secs)\r\n", tag,
 		error_message(IMAP_OK_COMPLETED), n, mytime);
 
@@ -4934,7 +5097,9 @@ void cmd_copy(char *tag, char *sequence, char *name, int usinguid)
     /* local mailbox -> local mailbox */
     if (!r) {
 	r = index_copy(imapd_index, sequence, usinguid, mailboxname,
-		       &copyuid, !config_getswitch(IMAPOPT_SINGLEINSTANCESTORE));
+		       &copyuid, !config_getswitch(IMAPOPT_SINGLEINSTANCESTORE),
+		       &imapd_namespace,
+		       (imapd_userisadmin || imapd_userisproxyadmin));
     }
 
     imapd_check(NULL, usinguid);
@@ -4993,7 +5158,7 @@ void cmd_expunge(char *tag, char *sequence)
 
     if (!r) r = index_expunge(imapd_index, sequence);
     /* tell expunges */
-    if (!r) index_tellchanges(imapd_index, 1, sequence ? 1 : 0);
+    if (!r) index_tellchanges(imapd_index, 1, sequence ? 1 : 0, 0);
     
     if (r) {
 	prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(r));
@@ -7187,8 +7352,8 @@ void cmd_namespace(char* tag)
 	    sawone[NAMESPACE_INBOX] = 
 		!mboxlist_lookup(inboxname, NULL, NULL);
 	}
-	sawone[NAMESPACE_USER] = 1;
-	sawone[NAMESPACE_SHARED] = 1;
+	sawone[NAMESPACE_USER] = imapd_userisadmin ? 1 : imapd_namespace.accessible[NAMESPACE_USER];
+	sawone[NAMESPACE_SHARED] = imapd_userisadmin ? 1 : imapd_namespace.accessible[NAMESPACE_SHARED];
     } else {
 	pattern = xstrdup("%");
 	/* now find all the exciting toplevel namespaces -
@@ -7299,13 +7464,13 @@ int parsecreateargs(struct dlist **extargs)
  * GETANNOTATION, FETCH.
  */
 
-int getannotatefetchdata(char *tag,
-			 struct strlist **entries, struct strlist **attribs)
+static int parse_annotate_fetch_data(const char *tag,
+				     int permessage_flag,
+				     strarray_t *entries,
+				     strarray_t *attribs)
 {
     int c;
     static struct buf arg;
-
-    *entries = *attribs = NULL;
 
     c = prot_getc(imapd_in);
     if (c == EOF) {
@@ -7316,7 +7481,10 @@ int getannotatefetchdata(char *tag,
     else if (c == '(') {
 	/* entry list */
 	do {
-	    c = getqstring(imapd_in, imapd_out, &arg);
+	    if (permessage_flag)
+		c = getastring(imapd_in, imapd_out, &arg);
+	    else
+		c = getqstring(imapd_in, imapd_out, &arg);
 	    if (c == EOF) {
 		prot_printf(imapd_out,
 			    "%s BAD Missing annotation entry\r\n", tag);
@@ -7324,7 +7492,7 @@ int getannotatefetchdata(char *tag,
 	    }
 
 	    /* add the entry to the list */
-	    appendstrlist(entries, arg.s);
+	    strarray_append(entries, arg.s);
 
 	} while (c == ' ');
 
@@ -7340,14 +7508,17 @@ int getannotatefetchdata(char *tag,
     else {
 	/* single entry -- add it to the list */
 	prot_ungetc(c, imapd_in);
-	c = getqstring(imapd_in, imapd_out, &arg);
+	if (permessage_flag)
+	    c = getastring(imapd_in, imapd_out, &arg);
+	else
+	    c = getqstring(imapd_in, imapd_out, &arg);
 	if (c == EOF) {
 	    prot_printf(imapd_out,
 			"%s BAD Missing annotation entry\r\n", tag);
 	    goto baddata;
 	}
 
-	appendstrlist(entries, arg.s);
+	strarray_append(entries, arg.s);
     }
 
     if (c != ' ' || (c = prot_getc(imapd_in)) == EOF) {
@@ -7359,7 +7530,10 @@ int getannotatefetchdata(char *tag,
     if (c == '(') {
 	/* attrib list */
 	do {
-	    c = getnstring(imapd_in, imapd_out, &arg);
+	    if (permessage_flag)
+		c = getastring(imapd_in, imapd_out, &arg);
+	    else
+		c = getqstring(imapd_in, imapd_out, &arg);
 	    if (c == EOF) {
 		prot_printf(imapd_out,
 			    "%s BAD Missing annotation attribute(s)\r\n", tag);
@@ -7367,7 +7541,7 @@ int getannotatefetchdata(char *tag,
 	    }
 
 	    /* add the attrib to the list */
-	    appendstrlist(attribs, arg.s);
+	    strarray_append(attribs, arg.s);
 
 	} while (c == ' ');
 
@@ -7383,14 +7557,17 @@ int getannotatefetchdata(char *tag,
     else {
 	/* single attrib */
 	prot_ungetc(c, imapd_in);
-	c = getqstring(imapd_in, imapd_out, &arg);
+	if (permessage_flag)
+	    c = getastring(imapd_in, imapd_out, &arg);
+	else
+	    c = getqstring(imapd_in, imapd_out, &arg);
 	    if (c == EOF) {
 		prot_printf(imapd_out,
 			    "%s BAD Missing annotation attribute\r\n", tag);
 		goto baddata;
 	    }
 
-	appendstrlist(attribs, arg.s);
+	strarray_append(attribs, arg.s);
    }
 
     return c;
@@ -7407,13 +7584,12 @@ int getannotatefetchdata(char *tag,
  * Any surrounding command text must be parsed elsewhere, ie,
  * GETANNOTATION, FETCH.
  */
-int getmetadatafetchdata(char *tag,
-			 struct strlist **entries, struct strlist **attribs)
+static int parse_metadata_fetch_data(const char *tag,
+				     strarray_t *entries,
+				     strarray_t *attribs)
 {
     int c;
     static struct buf arg;
-
-    *entries = *attribs = NULL;
 
     c = prot_getc(imapd_in);
     if (c == EOF) {
@@ -7432,7 +7608,7 @@ int getmetadatafetchdata(char *tag,
 	    }
 
 	    /* add the entry to the list */
-	    appendstrlist(entries, arg.s);
+	    strarray_append(entries, arg.s);
 
 	} while (c == ' ');
 
@@ -7455,7 +7631,7 @@ int getmetadatafetchdata(char *tag,
 	    goto baddata;
 	}
 
-	appendstrlist(entries, arg.s);
+	strarray_append(entries, arg.s);
     }
 
     if (c != ' ') return c;
@@ -7473,7 +7649,7 @@ int getmetadatafetchdata(char *tag,
 	    }
 
 	    /* add the attrib to the list */
-	    appendstrlist(attribs, arg.s);
+	    strarray_append(attribs, arg.s);
 
 	} while (c == ' ');
 
@@ -7495,7 +7671,7 @@ int getmetadatafetchdata(char *tag,
 			"%s BAD Missing annotation attribute\r\n", tag);
 	    goto baddata;
 	}
-	appendstrlist(attribs, arg.s);
+	strarray_append(attribs, arg.s);
     }
 
     return c;
@@ -7511,9 +7687,16 @@ int getmetadatafetchdata(char *tag,
  * This is a generic routine which parses just the annotation data.
  * Any surrounding command text must be parsed elsewhere, ie,
  * SETANNOTATION, STORE, APPEND.
+ *
+ * Also parse RFC5257 per-message annotation store data, which
+ * is almost identical but differs in that entry names and attrib
+ * names are astrings rather than strings, and that the whole set
+ * of data *must* be enclosed in parentheses.
  */
 
-int getannotatestoredata(char *tag, struct entryattlist **entryatts)
+static int parse_annotate_store_data(const char *tag,
+				     int permessage_flag,
+				     struct entryattlist **entryatts)
 {
     int c, islist = 0;
     static struct buf entry, attrib, value;
@@ -7531,6 +7714,11 @@ int getannotatestoredata(char *tag, struct entryattlist **entryatts)
 	/* entry list */
 	islist = 1;
     }
+    else if (permessage_flag) {
+	prot_printf(imapd_out,
+		    "%s BAD Missing paren for annotation entry\r\n", tag);
+	goto baddata;
+    }
     else {
 	/* single entry -- put the char back */
 	prot_ungetc(c, imapd_in);
@@ -7538,7 +7726,10 @@ int getannotatestoredata(char *tag, struct entryattlist **entryatts)
 
     do {
 	/* get entry */
-	c = getqstring(imapd_in, imapd_out, &entry);
+	if (permessage_flag)
+	    c = getastring(imapd_in, imapd_out, &entry);
+	else
+	    c = getqstring(imapd_in, imapd_out, &entry);
 	if (c == EOF) {
 	    prot_printf(imapd_out,
 			"%s BAD Missing annotation entry\r\n", tag);
@@ -7555,7 +7746,10 @@ int getannotatestoredata(char *tag, struct entryattlist **entryatts)
 
 	do {
 	    /* get attrib */
-	    c = getqstring(imapd_in, imapd_out, &attrib);
+	    if (permessage_flag)
+		c = getastring(imapd_in, imapd_out, &attrib);
+	    else
+		c = getqstring(imapd_in, imapd_out, &attrib);
 	    if (c == EOF) {
 		prot_printf(imapd_out,
 			    "%s BAD Missing annotation attribute\r\n", tag);
@@ -7563,15 +7757,20 @@ int getannotatestoredata(char *tag, struct entryattlist **entryatts)
 	    }
 
 	    /* get value */
-	    if (c != ' ' ||
-		(c = getnstring(imapd_in, imapd_out, &value)) == EOF) {
+	    if (c != ' ') {
+		prot_printf(imapd_out,
+			    "%s BAD Missing annotation value\r\n", tag);
+		goto baddata;
+	    }
+	    c = getbnstring(imapd_in, imapd_out, &value);
+	    if (c == EOF) {
 		prot_printf(imapd_out,
 			    "%s BAD Missing annotation value\r\n", tag);
 		goto baddata;
 	    }
 
 	    /* add the attrib-value pair to the list */
-	    appendattvalue(&attvalues, attrib.s, value.s);
+	    appendattvalue(&attvalues, attrib.s, &value);
 
 	} while (c == ' ');
 
@@ -7616,7 +7815,8 @@ int getannotatestoredata(char *tag, struct entryattlist **entryatts)
  * Any surrounding command text must be parsed elsewhere, ie,
  * SETANNOTATION, STORE, APPEND.
  */
-int getmetadatastoredata(char *tag, struct entryattlist **entryatts)
+static int parse_metadata_store_data(const char *tag,
+				     struct entryattlist **entryatts)
 {
     int c;
     const char *name;
@@ -7643,20 +7843,23 @@ int getmetadatastoredata(char *tag, struct entryattlist **entryatts)
 			"%s BAD Missing metadata entry\r\n", tag);
 	    goto baddata;
 	}
+	lcase(entry.s);
 
 	/* get value */
-	c = getnstring(imapd_in, imapd_out, &value);
+	c = getbnstring(imapd_in, imapd_out, &value);
 	if (c == EOF) {
 	    prot_printf(imapd_out,
 			"%s BAD Missing metadata value\r\n", tag);
 	    goto baddata;
 	}
 
-	if (!strncmp(entry.s, "/private", 8)) {
+	if (!strncmp(entry.s, "/private", 8) &&
+	    (entry.s[8] == '\0' || entry.s[8] == '/')) {
 	    att = "value.priv";
 	    name = entry.s + 8;
 	}
-	else if (!strncmp(entry.s, "/shared", 7)) {
+	else if (!strncmp(entry.s, "/shared", 7) &&
+	         (entry.s[7] == '\0' || entry.s[7] == '/')) {
 	    att = "value.shared";
 	    name = entry.s + 7;
 	}
@@ -7671,12 +7874,12 @@ int getmetadatastoredata(char *tag, struct entryattlist **entryatts)
 	for (entryp = *entryatts; entryp; entryp = entryp->next) {
 	    if (strcmp(entryp->entry, name)) continue;
 	    /* it's a match, have to append! */
-	    appendattvalue(&entryp->attvalues, att, value.s);
+	    appendattvalue(&entryp->attvalues, att, &value);
 	    need_add = 0;
 	    break;
 	}
 	if (need_add) {
-	    appendattvalue(&attvalues, att, value.s);
+	    appendattvalue(&attvalues, att, &value);
 	    appendentryatt(entryatts, name, attvalues);
 	    attvalues = NULL;
 	}
@@ -7699,63 +7902,44 @@ int getmetadatastoredata(char *tag, struct entryattlist **entryatts)
     return EOF;
 }
 
-/*
- * Output an entry/attribute-value list response.
- *
- * This is a generic routine which outputs just the annotation data.
- * Any surrounding response text must be output elsewhere, ie,
- * GETANNOTATION, FETCH. 
- */
-void annotate_response(struct entryattlist *l)
+static void getannotation_response(const char *mboxname,
+			           uint32_t uid
+					__attribute__((unused)),
+				   const char *entry,
+				   struct attvaluelist *attvalues,
+				   void *rock __attribute__((unused)))
 {
-    int islist; /* do we have more than one entry? */
+    int sep = '(';
+    struct attvaluelist *l;
 
-    if (!l) return;
-
-    islist = (l->next != NULL);
-
-    if (islist) prot_printf(imapd_out, "(");
-
-    while (l) {
-	prot_printf(imapd_out, "\"%s\"", l->entry);
-
-	/* do we have attributes?  solicited vs. unsolicited */
-	if (l->attvalues) {
-	    struct attvaluelist *av = l->attvalues;
-
-	    prot_printf(imapd_out, " (");
-	    while (av) {
-		prot_printf(imapd_out, "\"%s\" ", av->attrib);
-		if (!strcasecmp(av->value, "NIL"))
-		    prot_printf(imapd_out, "NIL");
-		else
-		    prot_printf(imapd_out, "\"%s\"", av->value);
-
-		if ((av = av->next) == NULL)
-		    prot_printf(imapd_out, ")");
-		else
-		    prot_printf(imapd_out, " ");
-	    }
-	}
-
-	if ((l = l->next) != NULL)
-	    prot_printf(imapd_out, " ");
+    prot_printf(imapd_out, "* ANNOTATION ");
+    prot_printastring(imapd_out, mboxname);
+    prot_putc(' ', imapd_out);
+    prot_printstring(imapd_out, entry);
+    prot_putc(' ', imapd_out);
+    for (l = attvalues ; l ; l = l->next) {
+	prot_putc(sep, imapd_out);
+	sep = ' ';
+	prot_printstring(imapd_out, l->attrib);
+	prot_putc(' ',  imapd_out);
+	prot_printmap(imapd_out, l->value.s, l->value.len);
     }
-
-    if (islist) prot_printf(imapd_out, ")");
+    prot_printf(imapd_out, ")\r\n");
 }
 
 /*
  * Perform a GETANNOTATION command
  *
  * The command has been parsed up to the entries
- */    
-void cmd_getannotation(char *tag, char *mboxpat)
+ */
+static void cmd_getannotation(const char *tag, char *mboxpat)
 {
     int c, r = 0;
-    struct strlist *entries = NULL, *attribs = NULL;
+    strarray_t entries = STRARRAY_INITIALIZER;
+    strarray_t attribs = STRARRAY_INITIALIZER;
+    annotate_scope_t scope;
 
-    c = getannotatefetchdata(tag, &entries, &attribs);
+    c = parse_annotate_fetch_data(tag, /*permessage_flag*/0, &entries, &attribs);
     if (c == EOF) {
 	eatline(imapd_in, c);
 	return;
@@ -7771,9 +7955,15 @@ void cmd_getannotation(char *tag, char *mboxpat)
 	goto freeargs;
     }
 
-    r = annotatemore_fetch(mboxpat, entries, attribs, &imapd_namespace,
+    annotate_scope_init_server(&scope);
+    if (mboxpat[0])
+	annotate_scope_init_mailbox(&scope, mboxpat);
+
+    r = annotatemore_fetch(&scope, &entries, &attribs, &imapd_namespace,
 			   imapd_userisadmin || imapd_userisproxyadmin,
-			   imapd_userid, imapd_authstate, imapd_out, 0, 0);
+			   imapd_userid, imapd_authstate,
+			   getannotation_response, NULL,
+			   0);
 
     imapd_check(NULL, 0);
 
@@ -7785,32 +7975,71 @@ void cmd_getannotation(char *tag, char *mboxpat)
     }
 
   freeargs:
-    if (entries) freestrlist(entries);
-    if (attribs) freestrlist(attribs);
+    strarray_fini(&entries);
+    strarray_fini(&attribs);
 
     return;
+}
+
+static void getmetadata_response(const char *mboxname,
+			         uint32_t uid
+				    __attribute__((unused)),
+				 const char *entry,
+				 struct attvaluelist *attvalues,
+				 void *rock __attribute__((unused)))
+{
+    int sep = '(';
+    struct attvaluelist *l;
+    struct buf mentry = BUF_INITIALIZER;
+
+    prot_printf(imapd_out, "* METADATA ");
+    prot_printastring(imapd_out, mboxname);
+    prot_putc(' ', imapd_out);
+    for (l = attvalues ; l ; l = l->next) {
+	/* check if it's a value we print... */
+	buf_reset(&mentry);
+	if (!strcmp(l->attrib, "value.shared"))
+	    buf_appendcstr(&mentry, "/shared");
+	else if (!strcmp(l->attrib, "value.priv"))
+	    buf_appendcstr(&mentry, "/private");
+	else
+	    continue;
+	buf_appendcstr(&mentry, entry);
+	buf_cstring(&mentry);
+
+	prot_putc(sep, imapd_out);
+	sep = ' ';
+	prot_printastring(imapd_out, mentry.s);
+	prot_putc(' ',  imapd_out);
+	prot_printmap(imapd_out, l->value.s, l->value.len);
+    }
+    prot_printf(imapd_out, ")\r\n");
+    buf_free(&mentry);
 }
 
 /*
  * Perform a GETMETADATA command
  *
  * The command has been parsed up to the entries
- */    
-void cmd_getmetadata(char *tag, char *mboxpat)
+ */
+static void cmd_getmetadata(const char *tag, char *mboxpat)
 {
     int c, r = 0;
-    struct strlist *entries = NULL, *attribs = NULL;
-    struct strlist *newe = NULL, *newa = NULL;
-    struct strlist *real_entries;
-    struct strlist *item;
+    strarray_t entries = STRARRAY_INITIALIZER;
+    strarray_t attribs = STRARRAY_INITIALIZER;
+    strarray_t newe = STRARRAY_INITIALIZER;
+    strarray_t newa = STRARRAY_INITIALIZER;
+    strarray_t *real_entries;
     int maxsize = -1;
     int basesize = 0;
     int *sizeptr = NULL;
     int depth = 0;
     int have_shared = 0;
     int have_private = 0;
+    int i;
+    annotate_scope_t scope;
 
-    c = getmetadatafetchdata(tag, &entries, &attribs);
+    c = parse_metadata_fetch_data(tag, &entries, &attribs);
     if (c == EOF) {
 	eatline(imapd_in, c);
 	return;
@@ -7829,28 +8058,29 @@ void cmd_getmetadata(char *tag, char *mboxpat)
     /* we need to rewrite the entries and attribs to match the way that
      * the old annotation system works.  also, we need to handle the
      * options if there are any */
-    if (attribs) {
-	while (entries) {
-	    item = entries->next;
-	    if (!item) {
+    if (attribs.count) {
+	for (i = 0 ; i < entries.count ; i+=2) {
+	    const char *option = entries.data[i];
+	    const char *value = entries.data[i+1];
+	    if (!value) {
 		prot_printf(imapd_out,
 			    "%s BAD missing value to metadata option\r\n",
 			    tag);
 		goto freeargs;
 	    }
-	    if (!strcasecmp(entries->s, "MAXSIZE")) {
+	    if (!strcasecmp(option, "MAXSIZE")) {
 		/* XXX - scan for "is number" */
-		maxsize = atoi(item->s);
+		maxsize = atoi(value);
 		sizeptr = &maxsize;
 	    }
-	    else if (!strcasecmp(entries->s, "DEPTH")) {
-		if (!strcmp(item->s, "0")) {
+	    else if (!strcasecmp(option, "DEPTH")) {
+		if (!strcmp(value, "0")) {
 		    depth = 0;
 		}
-		else if (!strcmp(item->s, "1")) {
+		else if (!strcmp(value, "1")) {
 		    depth = 1;
 		}
-		else if (!strcasecmp(item->s, "infinity")) {
+		else if (!strcasecmp(value, "infinity")) {
 		    depth = -1;
 		}
 		else {
@@ -7860,30 +8090,34 @@ void cmd_getmetadata(char *tag, char *mboxpat)
 		    goto freeargs;
 		}
 	    }
-	    entries = item->next;
 	}
-	real_entries = attribs;
+	real_entries = &attribs;
     }
     else {
-	real_entries = entries;
+	real_entries = &entries;
     }
 
-    for (item = real_entries; item; item = item->next) {
+    for (i = 0 ; i < real_entries->count ; i++) {
+	char *ent = real_entries->data[i];
 	char entry[MAX_MAILBOX_NAME];
+
+	lcase(ent);
 	/* there's no way to perfect this - unfortunately - the old style
 	 * syntax doesn't support everything.  XXX - will be nice to get
 	 * rid of this... */
-	if (!strncmp(real_entries->s, "/private", 8)) {
-	    strncpy(entry, real_entries->s + 8, MAX_MAILBOX_NAME);
+	if (!strncmp(ent, "/private", 8) &&
+	    (ent[8] == '\0' || ent[8] == '/')) {
+	    strncpy(entry, ent + 8, MAX_MAILBOX_NAME);
 	    have_private = 1;
 	}
-	else if (!strncmp(real_entries->s, "/shared", 7)) {
-	    strncpy(entry, real_entries->s + 7, MAX_MAILBOX_NAME);
+	else if (!strncmp(ent, "/shared", 7) &&
+	         (ent[7] == '\0' || ent[7] == '/')) {
+	    strncpy(entry, ent + 7, MAX_MAILBOX_NAME);
 	    have_shared = 1;
 	}
 	else {
 	    prot_printf(imapd_out,
-			"%s BAD entry must /private or /shared\r\n",
+			"%s BAD entry must begin with /shared or /private\r\n",
 			tag);
 	    goto freeargs;
 	}
@@ -7891,16 +8125,21 @@ void cmd_getmetadata(char *tag, char *mboxpat)
 	    strncat(entry, "/%", MAX_MAILBOX_NAME);
 	else if (depth == -1)
 	    strncat(entry, "/*", MAX_MAILBOX_NAME);
-	appendstrlist(&newe, entry);
+	strarray_append(&newe, entry);
     }
 
-    if (have_private) appendstrlist(&newa, "value.priv");
-    if (have_shared) appendstrlist(&newa, "value.shared");
+    if (have_private) strarray_append(&newa, "value.priv");
+    if (have_shared) strarray_append(&newa, "value.shared");
+
+    annotate_scope_init_server(&scope);
+    if (mboxpat[0])
+	annotate_scope_init_mailbox(&scope, mboxpat);
 
     basesize = maxsize;
-    r = annotatemore_fetch(mboxpat, newe, newa, &imapd_namespace,
+    r = annotatemore_fetch(&scope, &newe, &newa, &imapd_namespace,
 			   imapd_userisadmin || imapd_userisproxyadmin,
-			   imapd_userid, imapd_authstate, imapd_out, 1,
+			   imapd_userid, imapd_authstate,
+			   getmetadata_response, NULL,
 			   sizeptr);
 
     imapd_check(NULL, 0);
@@ -7916,10 +8155,10 @@ void cmd_getmetadata(char *tag, char *mboxpat)
     }
 
   freeargs:
-    if (entries) freestrlist(entries);
-    if (attribs) freestrlist(attribs);
-    if (newe) freestrlist(newe);
-    if (newa) freestrlist(newa);
+    strarray_fini(&entries);
+    strarray_fini(&attribs);
+    strarray_fini(&newe);
+    strarray_fini(&newa);
 
     return;
 }
@@ -7928,13 +8167,14 @@ void cmd_getmetadata(char *tag, char *mboxpat)
  * Perform a SETANNOTATION command
  *
  * The command has been parsed up to the entry-att list
- */    
-void cmd_setannotation(char *tag, char *mboxpat)
+ */
+static void cmd_setannotation(const char *tag, char *mboxpat)
 {
     int c, r = 0;
     struct entryattlist *entryatts = NULL;
+    annotate_scope_t scope;
 
-    c = getannotatestoredata(tag, &entryatts);
+    c = parse_annotate_store_data(tag, 0, &entryatts);
     if (c == EOF) {
 	eatline(imapd_in, c);
 	return;
@@ -7950,9 +8190,17 @@ void cmd_setannotation(char *tag, char *mboxpat)
 	goto freeargs;
     }
 
-    r = annotatemore_store(mboxpat,
-			   entryatts, &imapd_namespace, imapd_userisadmin,
-			   imapd_userid, imapd_authstate);
+    annotate_scope_init_server(&scope);
+    if (mboxpat[0])
+	annotate_scope_init_mailbox(&scope, mboxpat);
+
+    r = annotatemore_begin();
+    if (!r)
+	r = annotatemore_store(&scope,
+			       entryatts, &imapd_namespace, imapd_userisadmin,
+			       imapd_userid, imapd_authstate);
+    if (!r)
+	annotatemore_commit();
 
     imapd_check(NULL, 0);
 
@@ -7972,13 +8220,14 @@ void cmd_setannotation(char *tag, char *mboxpat)
  * Perform a SETMETADATA command
  *
  * The command has been parsed up to the entry-att list
- */    
-void cmd_setmetadata(char *tag, char *mboxpat)
+ */
+static void cmd_setmetadata(const char *tag, char *mboxpat)
 {
     int c, r = 0;
     struct entryattlist *entryatts = NULL;
+    annotate_scope_t scope;
 
-    c = getmetadatastoredata(tag, &entryatts);
+    c = parse_metadata_store_data(tag, &entryatts);
     if (c == EOF) {
 	eatline(imapd_in, c);
 	return;
@@ -7994,9 +8243,17 @@ void cmd_setmetadata(char *tag, char *mboxpat)
 	goto freeargs;
     }
 
-    r = annotatemore_store(mboxpat,
-			   entryatts, &imapd_namespace, imapd_userisadmin,
-			   imapd_userid, imapd_authstate);
+    annotate_scope_init_server(&scope);
+    if (mboxpat[0])
+	annotate_scope_init_mailbox(&scope, mboxpat);
+
+    r = annotatemore_begin();
+    if (!r)
+	r = annotatemore_store(&scope,
+			       entryatts, &imapd_namespace, imapd_userisadmin,
+			       imapd_userid, imapd_authstate);
+    if (!r)
+	annotatemore_commit();
 
     imapd_check(NULL, 0);
 
@@ -8010,6 +8267,68 @@ void cmd_setmetadata(char *tag, char *mboxpat)
   freeargs:
     if (entryatts) freeentryatts(entryatts);
     return;
+}
+
+/*
+ * Parse a ANNOTATION item for SEARCH (RFC5257) into a struct
+ * searchannot and append it to the chain of such structures at *lp.
+ * Returns the next character.
+ */
+static int parse_search_annotation(int c, struct searchannot **lp)
+{
+    struct searchannot *sa;
+    struct buf entry = BUF_INITIALIZER;
+    struct buf attrib = BUF_INITIALIZER;
+    struct buf value = BUF_INITIALIZER;
+
+    if (c != ' ')
+	return EOF;
+
+    /* parse the entry */
+    c = getastring(imapd_in, imapd_out, &entry);
+    if (!entry.len || c != ' ') {
+	c = EOF;
+	goto out;
+    }
+
+    /* parse the attrib */
+    c = getastring(imapd_in, imapd_out, &attrib);
+    if (!attrib.len || c != ' ') {
+	c = EOF;
+	goto out;
+    }
+    if (strcmp(attrib.s, "value") &&
+        strcmp(attrib.s, "value.shared") &&
+        strcmp(attrib.s, "value.priv")) {
+	c = EOF;
+	goto out;
+    }
+
+    /* parse the value */
+    c = getbnstring(imapd_in, imapd_out, &value);
+    if (c == EOF)
+	goto out;
+
+    sa = xzmalloc(sizeof(*sa));
+    sa->entry = buf_release(&entry);
+    sa->attrib = buf_release(&attrib);
+    sa->namespace = &imapd_namespace;
+    sa->isadmin = imapd_userisadmin || imapd_userisproxyadmin;
+    sa->userid = imapd_userid;
+    sa->auth_state = imapd_authstate;
+    buf_move(&sa->value, &value);
+
+    /* append to *lp: move lp along the chain until
+     * it points to the last ->next pointer */
+    while (*lp && (*lp)->next)
+	lp = &(*lp)->next;
+    *lp = sa;
+
+out:
+    buf_free(&entry);
+    buf_free(&attrib);
+    buf_free(&value);
+    return c;
 }
 
 /*
@@ -8127,6 +8446,11 @@ int getsearchcriteria(char *tag, struct searchargs *searchargs,
 	}
 	else if (!strcmp(criteria.s, "all")) {
 	    break;
+	}
+	else if (!strcmp(criteria.s, "annotation")) {
+	    c = parse_search_annotation(c, &searchargs->annotations);
+	    if (c == EOF)
+		goto badcri;
 	}
 	else goto badcri;
 	break;
@@ -8770,7 +9094,7 @@ static int trashacl(struct protstream *pin, struct protstream *pout,
 }
 
 static int dumpacl(struct protstream *pin, struct protstream *pout,
-		   char *mailbox, char *acl_in) 
+		   const char *mboxname, const char *acl_in) 
 {
     int r = 0;
     int c;		/* getword() returns an int */
@@ -8797,7 +9121,7 @@ static int dumpacl(struct protstream *pin, struct protstream *pout,
 	prot_printf(pout, "%s SETACL {" SIZE_T_FMT "+}\r\n%s"
 		    " {" SIZE_T_FMT "+}\r\n%s {" SIZE_T_FMT "+}\r\n%s\r\n",
 		    tag,
-		    strlen(mailbox), mailbox,
+		    strlen(mboxname), mboxname,
 		    strlen(acl), acl,
 		    strlen(rights), rights);
 
@@ -8841,10 +9165,7 @@ static int dumpacl(struct protstream *pin, struct protstream *pout,
 }
 
 struct xfer_item {
-    char *name;
-    char *part;
-    char *acl;
-    int mbtype;
+    struct mboxlist_entry *mbentry;
     int remote_created;
     int done;
     struct xfer_item *next;
@@ -8897,23 +9218,22 @@ static void xfer_done(struct xfer_header **xferptr)
 {
     struct xfer_header *xfer = *xferptr;
     struct xfer_item *item, *next;
-    struct mboxlist_entry *mbentry = NULL;
     int r;
     char extname[MAX_MAILBOX_NAME];
 
     for (item = xfer->items; item; item = item->next) {
-	(*imapd_namespace.mboxname_toexternal)(&imapd_namespace, item->name,
+	(*imapd_namespace.mboxname_toexternal)(&imapd_namespace, item->mbentry->name,
 					       imapd_userid, extname);
 	/* done! */
 	if (item->done)
 	    continue;
 	/* tell murder it's back here and active */
-	r = xfer_mupdate(xfer, 1, item->name, item->part,
-			 config_servername, item->acl);
+	r = xfer_mupdate(xfer, 1, item->mbentry->name, item->mbentry->partition,
+			 config_servername, item->mbentry->acl);
 	if (r) {
 	    syslog(LOG_ERR,
 		   "Could not back out mupdate during move of %s (%s)",
-		   item->name, error_message(r));
+		   item->mbentry->name, error_message(r));
 	}
 
 	/* delete remote if created */
@@ -8924,22 +9244,17 @@ static void xfer_done(struct xfer_header **xferptr)
 	    if (r) {
 		syslog(LOG_ERR,
 		       "Could not back out remote mailbox during move of %s (%s)",
-		       item->name, error_message(r));
+		       item->mbentry->name, error_message(r));
 	    }
 	}
 
 	/* remove remote flag from local mailbox */
-	r = mboxlist_lookup(item->name, &mbentry, NULL);
-	if (!r) {
-	    mbentry->mbtype = item->mbtype;
-	    r = mboxlist_update(mbentry, 1);
-	}
-	mboxlist_entry_free(&mbentry);
+	r = mboxlist_update(item->mbentry, 1);
 
 	if (r) {
 	    syslog(LOG_ERR,
 		   "Could not unset remote flag on mailbox: %s",
-		   item->name);
+		   item->mbentry->name);
 	}
     }
 
@@ -8947,9 +9262,7 @@ static void xfer_done(struct xfer_header **xferptr)
     item = xfer->items;
     while (item) {
 	next = item->next;
-	free(item->name);
-	free(item->part);
-	free(item->acl);
+	mboxlist_entry_free(&item->mbentry);
 	free(item);
 	item = next;
     }
@@ -9047,16 +9360,11 @@ fail:
 }
 
 static void xfer_addmbox(struct xfer_header *xfer,
-			const char *mboxname, struct mboxlist_entry *entry)
+			 struct mboxlist_entry *mbentry)
 {
     struct xfer_item *item = xzmalloc(sizeof(struct xfer_item));
 
-    /* make a local copy of all the interesting fields */
-    item->name = xstrdup(mboxname);
-    item->part = xstrdup(entry->partition);
-    item->acl = xstrdup(entry->acl);
-    item->mbtype = entry->mbtype;
-    item->done = 0;
+    item->mbentry = mbentry;
 
     /* and link on to the list (reverse order) */
     item->next = xfer->items;
@@ -9070,7 +9378,7 @@ static int xfer_localcreate(struct xfer_header *xfer)
     char extname[MAX_MAILBOX_NAME];
 
     for (item = xfer->items; item; item = item->next) {
-	(*imapd_namespace.mboxname_toexternal)(&imapd_namespace, item->name,
+	(*imapd_namespace.mboxname_toexternal)(&imapd_namespace, item->mbentry->name,
 					       imapd_userid, extname);
 	if (xfer->topart) {
 	    /* need to send partition as an atom */
@@ -9083,7 +9391,7 @@ static int xfer_localcreate(struct xfer_header *xfer)
 	r = getresult(xfer->be->in, "LC1");
 	if (r) {
 	    syslog(LOG_ERR, "Could not move mailbox: %s, LOCALCREATE failed",
-		   item->name);
+		   item->mbentry->name);
 	    return r;
 	}
 	item->remote_created = 1;
@@ -9102,7 +9410,8 @@ static int xfer_backport_seen_item(struct xfer_item *item,
     unsigned recno;
     int r;
 
-    r = mailbox_open_irl(item->name, &mailbox);
+    /* XXX - entry version of open */
+    r = mailbox_open_irl(item->mbentry->name, &mailbox);
     if (r) return r;
 
     outlist = seqset_init(mailbox->i.last_uid, SEQ_MERGE);
@@ -9159,12 +9468,12 @@ static int xfer_deactivate(struct xfer_header *xfer)
 
     /* Step 3: mupdate.DEACTIVATE(mailbox, newserver) */
     for (item = xfer->items; item; item = item->next) {
-	r = xfer_mupdate(xfer, 0, item->name, item->part,
-			 config_servername, item->acl);
+	r = xfer_mupdate(xfer, 0, item->mbentry->name, item->mbentry->partition,
+			 config_servername, item->mbentry->acl);
 	if (r) {
 	    syslog(LOG_ERR,
 		   "Could not move mailbox: %s, MUPDATE DEACTIVATE failed",
-		   item->name);
+		   item->mbentry->name);
 	    return r;
 	}
     }
@@ -9180,13 +9489,13 @@ static int xfer_undump(struct xfer_header *xfer)
     char extname[MAX_MAILBOX_NAME];
 
     for (item = xfer->items; item; item = item->next) {
-	(*imapd_namespace.mboxname_toexternal)(&imapd_namespace, item->name,
+	(*imapd_namespace.mboxname_toexternal)(&imapd_namespace, item->mbentry->name,
 					       imapd_userid, extname);
-	r = mailbox_open_irl(item->name, &mailbox);
+	r = mailbox_open_irl(item->mbentry->name, &mailbox);
 	if (r) {
 	    syslog(LOG_ERR,
 		   "Failed to open mailbox %s for dump_mailbox() %s",
-		   item->name, error_message(r));
+		   item->mbentry->name, error_message(r));
 	}
 
 	/* Step 4: Dump local -> remote */
@@ -9201,14 +9510,14 @@ static int xfer_undump(struct xfer_header *xfer)
 	if (r) {
 	    syslog(LOG_ERR,
 		   "Could not move mailbox: %s, dump_mailbox() failed %s",
-		   item->name, error_message(r));
+		   item->mbentry->name, error_message(r));
 	    return r;
 	}
 
 	r = getresult(xfer->be->in, "D01");
 	if (r) {
 	    syslog(LOG_ERR, "Could not move mailbox: %s, UNDUMP failed %s",
-		   item->name, error_message(r));
+		   item->mbentry->name, error_message(r));
 	    return r;
 	}
     
@@ -9217,15 +9526,15 @@ static int xfer_undump(struct xfer_header *xfer)
 		     extname);
 	if (r) {
 	    syslog(LOG_ERR, "Could not clear remote acl on %s",
-		   item->name);
+		   item->mbentry->name);
 	    return r;
 	}
 
 	r = dumpacl(xfer->be->in, xfer->be->out,
-		    extname, item->acl);
+		    extname, item->mbentry->acl);
 	if (r) {
 	    syslog(LOG_ERR, "Could not set remote acl on %s",
-		   item->name);
+		   item->mbentry->name);
 	    return r;
 	}
 
@@ -9238,7 +9547,7 @@ static int xfer_undump(struct xfer_header *xfer)
 	    if (r) {
 		syslog(LOG_ERR,
 		       "Could not trigger remote push to mupdate server "
-		       "during move of %s", item->name);
+		       "during move of %s", item->mbentry->name);
 	    }
 	}
     }
@@ -9264,11 +9573,11 @@ static int xfer_reactivate(struct xfer_header *xfer)
 	 * much for making recovery easier!
 	 */
 	if (!topart) topart = "MOVED";
-	r = xfer_mupdate(xfer, 1, item->name, topart,
-			 xfer->toserver, item->acl);
+	r = xfer_mupdate(xfer, 1, item->mbentry->name, topart,
+			 xfer->toserver, item->mbentry->acl);
 	if (r) {
 	    syslog(LOG_ERR, "MUPDATE: can't activate mailbox entry '%s'",
-		   item->name);
+		   item->mbentry->name);
 	    return r;
 	}
     }
@@ -9287,13 +9596,13 @@ static int xfer_delete(struct xfer_header *xfer)
 	if (config_mupdate_config != IMAP_ENUM_MUPDATE_CONFIG_UNIFIED) {
 	    /* Note that we do not check the ACL, and we don't update MUPDATE */
 	    /* note also that we need to remember to let proxyadmins do this */
-	    r = mboxlist_deletemailbox(item->name,
+	    r = mboxlist_deletemailbox(item->mbentry->name,
 				       imapd_userisadmin || imapd_userisproxyadmin,
 				       imapd_userid, imapd_authstate, 0, 1, 0);
 	    if (r) {
 		syslog(LOG_ERR,
 		       "Could not delete local mailbox during move of %s",
-		       item->name);
+		       item->mbentry->name);
 		/* can't abort now! */
 	    }
 	} else {
@@ -9302,19 +9611,20 @@ static int xfer_delete(struct xfer_header *xfer)
 	     * function because we've already got the right value for
 	     * the new server in the mboxlist */
 	    /* note: delete closes mailbox */
-	    r = mailbox_open_iwl(item->name, &mailbox);
+	    /* XXX - really should be using the 'entry' here, not name */
+	    r = mailbox_open_iwl(item->mbentry->name, &mailbox);
 	    if (!r) r = mailbox_delete(&mailbox);
 	    if (r) {
 		syslog(LOG_ERR,
 		       "Could not delete local mailbox during move of %s",
-		       item->name);
+		       item->mbentry->name);
 		/* can't abort now! */
 	    }
 	    /* XXX - quota root? */
-	}
 
-	/* Delete mailbox annotations */
-	annotatemore_delete(item->name);
+	    /* Delete mailbox annotations */
+	    annotatemore_delete(item->mbentry);
+	}
 
 	/* mark this item done so the cleanup doesn't revert it! */
 	item->done = 1;
@@ -9337,10 +9647,10 @@ static int xfer_user_cb(char *name,
     if (r) return r;
     
     /* Skip remote mailbox */
-    if (!(mbentry->mbtype & MBTYPE_REMOTE))
-	xfer_addmbox(xfer, name, mbentry);
-
-    mboxlist_entry_free(&mbentry);
+    if (mbentry->mbtype & MBTYPE_REMOTE)
+	mboxlist_entry_free(&mbentry);
+    else
+	xfer_addmbox(xfer, mbentry);
 
     return 0;
 }
@@ -9473,7 +9783,8 @@ void cmd_xfer(const char *tag, const char *name,
     if (r) goto done;
 
     /* we're always moving this mailbox */
-    xfer_addmbox(xfer, mailboxname, mbentry);
+    xfer_addmbox(xfer, mbentry);
+    mbentry = NULL;
 
     /* if we are not moving a user, just move the one mailbox */
     if (!moving_user) {
@@ -9677,18 +9988,24 @@ int getsortcriteria(char *tag, struct sortcrit **sortcrit)
 	    (*sortcrit)[n].key = SORT_SUBJECT;
 	else if (!strcmp(criteria.s, "to"))
 	    (*sortcrit)[n].key = SORT_TO;
-#if 0
 	else if (!strcmp(criteria.s, "annotation")) {
+	    const char *userid = NULL;
+
 	    (*sortcrit)[n].key = SORT_ANNOTATION;
 	    if (c != ' ') goto missingarg;
-	    c = getstring(imapd_in, &arg);
+	    c = getastring(imapd_in, imapd_out, &criteria);
 	    if (c != ' ') goto missingarg;
-	    (*sortcrit)[n].args.annot.entry = xstrdup(arg.s);
-	    c = getstring(imapd_in, &arg);
+	    (*sortcrit)[n].args.annot.entry = xstrdup(criteria.s);
+	    c = getastring(imapd_in, imapd_out, &criteria);
 	    if (c == EOF) goto missingarg;
-	    (*sortcrit)[n].args.annot.attrib = xstrdup(arg.s);
+	    if (!strcmp(criteria.s, "value.shared"))
+		userid = "";
+	    else if (!strcmp(criteria.s, "value.priv"))
+		userid = imapd_userid;
+	    else
+		goto missingarg;
+	    (*sortcrit)[n].args.annot.userid = xstrdup(userid);
 	}
-#endif
 	else if (!strcmp(criteria.s, "modseq"))
 	    (*sortcrit)[n].key = SORT_MODSEQ;
 	else if (!strcmp(criteria.s, "uid"))
@@ -9732,13 +10049,44 @@ int getsortcriteria(char *tag, struct sortcrit **sortcrit)
     prot_printf(imapd_out, "%s BAD Missing Sort criteria\r\n", tag);
     if (c != EOF) prot_ungetc(c, imapd_in);
     return EOF;
-#if 0 /* For annotations stuff above */
  missingarg:
     prot_printf(imapd_out, "%s BAD Missing argument to Sort criterion %s\r\n",
 		tag, criteria.s);
     if (c != EOF) prot_ungetc(c, imapd_in);
     return EOF;
-#endif
+}
+
+static char *sortcrit_as_string(const struct sortcrit *sortcrit)
+{
+    struct buf b = BUF_INITIALIZER;
+    static const char * const key_names[] = {
+	"SEQUENCE", "ARRIVAL", "CC", "DATE",
+	"DISPLAYFROM", "DISPLAYTO", "FROM",
+	"SIZE", "SUBJECT", "TO", "ANNOTATION",
+	"MODSEQ", "UID"
+    };
+
+    for ( ; sortcrit->key ; sortcrit++) {
+	if (b.len)
+	    buf_putc(&b, ' ');
+	if (sortcrit->flags & SORT_REVERSE)
+	    buf_appendcstr(&b, "REVERSE ");
+
+	if (sortcrit->key < VECTOR_SIZE(key_names))
+	    buf_appendcstr(&b, key_names[sortcrit->key]);
+	else
+	    buf_printf(&b, "UNKNOWN%u", sortcrit->key);
+
+	switch (sortcrit->key) {
+	case SORT_ANNOTATION:
+	    buf_printf(&b, " \"%s\" \"%s\"",
+		       sortcrit->args.annot.entry,
+		       *sortcrit->args.annot.userid ?
+			    "value.priv" : "value.shared");
+	    break;
+	}
+    }
+    return buf_release(&b);
 }
 
 /*
@@ -9985,6 +10333,7 @@ void appendsearchargs(struct searchargs *s,
 void freesearchargs(struct searchargs *s)
 {
     struct searchsub *sub, *n;
+    struct searchannot *sa;
 
     if (!s) return;
 
@@ -9999,6 +10348,14 @@ void freesearchargs(struct searchargs *s)
     freestrlist(s->text);
     freestrlist(s->header_name);
     freestrlist(s->header);
+
+    while ((sa = s->annotations)) {
+	s->annotations = sa->next;
+	free(sa->entry);
+	free(sa->attrib);
+	buf_free(&sa->value);
+	free(sa);
+    }
 
     for (sub = s->sublist; sub; sub = n) {
 	n = sub->next;
@@ -10021,7 +10378,7 @@ static void freesortcrit(struct sortcrit *s)
 	switch (s[i].key) {
 	case SORT_ANNOTATION:
 	    free(s[i].args.annot.entry);
-	    free(s[i].args.annot.attrib);
+	    free(s[i].args.annot.userid);
 	    break;
 	}
 	i++;

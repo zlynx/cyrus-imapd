@@ -76,6 +76,7 @@
 #define FNAME_CACHE "/cyrus.cache"
 #define FNAME_SQUAT "/cyrus.squat"
 #define FNAME_EXPUNGE "/cyrus.expunge"
+#define FNAME_ANNOTATIONS "/cyrus.annotations"
 #define FNAME_CALDAV "/cyrus.caldav"
 
 enum meta_filename {
@@ -84,6 +85,7 @@ enum meta_filename {
   META_CACHE,
   META_SQUAT,
   META_EXPUNGE,
+  META_ANNOTATIONS,
   META_CALDAV
 };
 

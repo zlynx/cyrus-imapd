@@ -86,6 +86,8 @@ struct index_init {
     int qresync;
     int select;
     struct vanished_params vanished;
+    int want_expunged;
+    struct seqset *vanishedlist;
 };
 
 struct index_map {
@@ -193,7 +195,7 @@ extern void index_fetchresponses(struct index_state *state,
 extern int index_fetch(struct index_state *state,
 		       const char* sequence,
 		       int usinguid,
-		       struct fetchargs* fetchargs,
+		       const struct fetchargs* fetchargs,
 		       int* fetchedsomething);
 extern int index_store(struct index_state *state,
 		       char *sequence,
@@ -214,16 +216,19 @@ extern int index_copy(struct index_state *state,
 		      int usinguid,
 		      char *name, 
 		      char **copyuidp,
-		      int nolink);
+		      int nolink,
+		      struct namespace *namespace,
+		      int isadmin);
 extern int find_thread_algorithm(char *arg);
 
 extern int index_open(const char *name, struct index_init *init,
 		      struct index_state **stateptr);
+extern void index_select(struct index_state *state, struct index_init *init);
 extern int index_status(struct index_state *state, struct statusdata *sdata);
 extern void index_close(struct index_state **stateptr);
 extern unsigned index_finduid(struct index_state *state, unsigned uid);
 extern void index_tellchanges(struct index_state *state, int canexpunge,
-			      int printuid);
+			      int printuid, int printmodseq);
 extern unsigned index_getuid(struct index_state *state, uint32_t msgno);
 extern modseq_t index_highestmodseq(struct index_state *state);
 extern int index_check(struct index_state *state, int usinguid, int printuid);

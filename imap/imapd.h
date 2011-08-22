@@ -100,6 +100,12 @@ struct fetchargs {
 
     bit32 cache_atleast;          /* to do headers we need atleast this
 				   * cache version */
+    struct namespace *namespace; 
+    const char *userid;
+    strarray_t entries;		  /* for FETCH_ANNOTATION */
+    strarray_t attribs;
+    int isadmin;
+    struct auth_state *authstate;
 };
 
 /* Bitmasks for fetchitems */
@@ -117,7 +123,8 @@ enum {
     FETCH_SETSEEN =             (1<<10),
 /*     FETCH_UNCACHEDHEADER =      (1<<11) -- obsolete */
     FETCH_IS_PARTIAL =          (1<<12), /* this is the PARTIAL command */
-    FETCH_MODSEQ =		(1<<13)
+    FETCH_MODSEQ =		(1<<13),
+    FETCH_ANNOTATION =		(1<<14)
 };
 
 enum {
@@ -132,7 +139,17 @@ struct storeargs {
     modseq_t unchangedsince; /* unchanged since modseq, or ULLONG_MAX */
     int silent;
     int seen;
+    /* for STORE_*_FLAGS */
     bit32 system_flags;
+    /* Note that we must pass the user flags as names because the
+     * lookup of user flag names must proceed under the index lock */
+    strarray_t flags;
+    /* for STORE_ANNOTATION */
+    struct entryattlist *entryatts;
+    struct namespace *namespace;
+    int isadmin;
+    const char *userid;
+    struct auth_state *authstate;
     /* private to index.c */
     bit32 user_flags[MAX_USER_FLAGS/32];
     time_t update_time;
@@ -140,13 +157,27 @@ struct storeargs {
     /* private to index_storeflag() */
     unsigned last_msgno;
     unsigned last_found;
+    /* returned to caller */
+    struct seqset *modified;
 };
 
 /* values for operation */
 enum {
-    STORE_ADD = 1,
-    STORE_REMOVE = 2,
-    STORE_REPLACE = 3
+    STORE_ADD_FLAGS = 1,
+    STORE_REMOVE_FLAGS,
+    STORE_REPLACE_FLAGS,
+    STORE_ANNOTATION
+};
+
+struct searchannot {
+    struct searchannot *next;
+    char *entry;
+    char *attrib;
+    struct namespace *namespace;
+    int isadmin;
+    const char *userid;
+    struct auth_state *auth_state;
+    struct buf value;
 };
 
 struct searchsub {
@@ -199,6 +230,7 @@ struct searchargs {
     struct strlist *header_name, *header;
     struct searchsub *sublist;
     modseq_t modseq;
+    struct searchannot *annotations;
 
     bit32 cache_atleast;
 
@@ -214,7 +246,7 @@ struct sortcrit {
     union {			/* argument(s) to the sort key */
 	struct {
 	    char *entry;
-	    char *attrib;
+	    char *userid;
 	} annot;
     } args;
 };

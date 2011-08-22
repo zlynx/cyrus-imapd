@@ -648,6 +648,10 @@ int mboxname_init_namespace(struct namespace *namespace, int isadmin)
 	config_getswitch(IMAPOPT_UNIXHIERARCHYSEP) ? '/' : '.';
     namespace->isalt = !isadmin && config_getswitch(IMAPOPT_ALTNAMESPACE);
 
+    namespace->accessible[NAMESPACE_INBOX] = 1;
+    namespace->accessible[NAMESPACE_USER] = !config_getswitch(IMAPOPT_DISABLE_USER_NAMESPACE);
+    namespace->accessible[NAMESPACE_SHARED] = !config_getswitch(IMAPOPT_DISABLE_SHARED_NAMESPACE);
+
     if (namespace->isalt) {
 	/* alternate namespace */
 	strcpy(namespace->prefix[NAMESPACE_INBOX], "");
@@ -749,8 +753,7 @@ char *mboxname_hiersep_toexternal(struct namespace *namespace, char *name,
  */
 int mboxname_userownsmailbox(const char *userid, const char *name)
 {
-    struct namespace internal = { '.', 0, 0, { "INBOX.", "user.", "" },
-				  NULL, NULL, NULL, NULL };
+    struct namespace internal = NAMESPACE_INITIALIZER;
     char inboxname[MAX_MAILBOX_BUFFER];
 
     if (!mboxname_tointernal(&internal, "INBOX", userid, inboxname) &&
@@ -1329,6 +1332,11 @@ char *mboxname_metapath(const char *partition, const char *mboxname,
 	snprintf(confkey, 256, "metadir-squat-%s", partition);
 	metaflag = IMAP_ENUM_METAPARTITION_FILES_SQUAT;
 	filename = FNAME_SQUAT;
+	break;
+    case META_ANNOTATIONS:
+	snprintf(confkey, 256, "metadir-index-%s", partition);
+	metaflag = IMAP_ENUM_METAPARTITION_FILES_ANNOTATIONS;
+	filename = FNAME_ANNOTATIONS;
 	break;
     case META_CALDAV:
 	snprintf(confkey, 256, "metadir-caldav-%s", partition);

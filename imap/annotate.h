@@ -48,21 +48,24 @@
 #include "charset.h" /* for comp_pat */
 #include "imapd.h"
 #include "mboxname.h"
+#include "mboxlist.h"
 #include "prot.h"
-#include "cyrusdb.h"
+#include "util.h"
+#include "strarray.h"
+
+#define FNAME_GLOBALANNOTATIONS "/annotations.db"
 
 /* List of strings, for fetch and search argument blocks */
 struct strlist {
     char *s;                   /* String */
     comp_pat *p;               /* Compiled pattern, for search */
-    void *rock;                /* Associated metadata */
     struct strlist *next;
 };
 
 /* List of attrib-value pairs */
 struct attvaluelist {
     char *attrib;
-    char *value;
+    struct buf value;
     struct attvaluelist *next;
 };
 
@@ -73,95 +76,139 @@ struct entryattlist {
     struct entryattlist *next;
 };
 
-struct annotation_data {
-    const char *value;
-    size_t size;
-    time_t modifiedsince;
-    const char *contenttype;
+enum {
+  ANNOTATION_SCOPE_SERVER = 1,
+  ANNOTATION_SCOPE_MAILBOX = 2,
+  ANNOTATION_SCOPE_MESSAGE = 3
 };
 
-struct annotate_info_t
+typedef struct annotate_scope annotate_scope_t;
+struct annotate_scope
 {
-    const char *name;
-    int flag;
+    int which;			/* ANNOTATION_SCOPE_* */
+    const char *mailbox;	/* external mailbox pattern if _MAILBOX
+				 * or external mailbox name if _MESSAGE */
+    unsigned int uid;		/* for _MESSAGE */
+    const char *acl;		/* for _MESSAGE */
 };
 
+#define annotate_scope_init_server(_scope) \
+    do { \
+	memset((_scope), 0, sizeof(annotate_scope_t)); \
+	(_scope)->which = ANNOTATION_SCOPE_SERVER; \
+    } while(0)
+#define annotate_scope_init_mailbox(_scope, _mboxnamepatt) \
+    do { \
+	memset((_scope), 0, sizeof(annotate_scope_t)); \
+	(_scope)->which = ANNOTATION_SCOPE_MAILBOX; \
+	(_scope)->mailbox = (_mboxnamepatt); \
+    } while(0)
+#define annotate_scope_init_message(_scope, _mailbox, _uid) \
+    do { \
+	memset((_scope), 0, sizeof(annotate_scope_t)); \
+	(_scope)->which = ANNOTATION_SCOPE_MESSAGE; \
+	(_scope)->mailbox = (_mailbox)->name; \
+	(_scope)->acl = (_mailbox)->acl; \
+	(_scope)->uid = (_uid); \
+    } while(0)
 
 /* String List Management */
 void appendstrlist(struct strlist **l, char *s);
 void appendstrlistpat(struct strlist **l, char *s);
-void appendstrlist_withdata(struct strlist **l, char *s, void *d, size_t size);
 void freestrlist(struct strlist *l);
 
 /* Attribute Management (also used by ID) */
-void appendattvalue(struct attvaluelist **l, const char *attrib, const char *value);
+void appendattvalue(struct attvaluelist **l, const char *attrib,
+		    const struct buf *value);
+void dupattvalues(struct attvaluelist **dst,
+		  const struct attvaluelist *src);
 void freeattvalues(struct attvaluelist *l);
 
 /* Entry Management */
 void appendentryatt(struct entryattlist **l, const char *entry,
 		    struct attvaluelist *attvalues);
+void setentryatt(struct entryattlist **l, const char *entry,
+		 const char *attrib, const struct buf *value);
+void dupentryatt(struct entryattlist **l,
+		 const struct entryattlist *);
 void freeentryatts(struct entryattlist *l);
 
-/* name of the annotation database */
-#define FNAME_ANNOTATIONS "/annotations.db"
-
 /* initialize database structures */
-#define ANNOTATE_SYNC (1 << 1)
-void annotatemore_init(int myflags,
+void annotatemore_init(
 		       int (*fetch_func)(const char *, const char *,
-					 struct strlist *, struct strlist *),
+					 const strarray_t *, const strarray_t *),
 		       int (*store_func)(const char *, const char *,
 					 struct entryattlist *));
 
 /* open the annotation db */
-void annotatemore_open(const char *fname);
+void annotatemore_open(void);
 
 typedef int (*annotatemore_find_proc_t)(const char *mailbox,
+		    uint32_t uid,
 		    const char *entry, const char *userid,
-		    struct annotation_data *attrib, void *rock);
+		    const struct buf *value, void *rock);
 
 /* 'proc'ess all annotations matching 'mailbox' and 'entry' */
-int annotatemore_findall(const char *mailbox, const char *entry,
-			 annotatemore_find_proc_t proc, void *rock,
-			 struct txn **tid);
+int annotatemore_findall(const char *mailbox, uint32_t uid, const char *entry,
+			 annotatemore_find_proc_t proc, void *rock);
 
 /* fetch annotations and output results */
-int annotatemore_fetch(char *mailbox,
-		       struct strlist *entries, struct strlist *attribs,
-		       struct namespace *namespace, int isadmin, char *userid,
-		       struct auth_state *auth_state, struct protstream *pout,
-		       int ismetadata, int *maxsize);
-
-extern const struct annotate_info_t annotate_mailbox_flags[];
+typedef void (*annotate_fetch_cb_t)(const char *mboxname,
+				    uint32_t uid,
+				    const char *entry,
+				    struct attvaluelist *,
+				    void *rock);
+int annotatemore_fetch(const annotate_scope_t *,
+		       const strarray_t *entries, const strarray_t *attribs,
+		       struct namespace *namespace, int isadmin, const char *userid,
+		       struct auth_state *auth_state,
+		       annotate_fetch_cb_t callback, void *rock,
+		       int *maxsize);
 
 /* lookup a single annotation and return result */
 int annotatemore_lookup(const char *mboxname, const char *entry,
-			const char *userid, struct annotation_data *attrib);
+			const char *userid, struct buf *value);
+/* lookup a single per-message annotation and return result */
+int annotatemore_msg_lookup(const char *mboxname, uint32_t uid, const char *entry,
+			    const char *userid, struct buf *value);
 
-/* store annotations */
-int annotatemore_store(const char *mboxname,
+/* store annotations.  Requires an open transaction */
+int annotatemore_store(const annotate_scope_t *,
 		       struct entryattlist *l, struct namespace *namespace,
 		       int isadmin, const char *userid,
 		       struct auth_state *auth_state);
 
-/* low-level interface for use by mbdump routines */
-int annotatemore_write_entry(const char *mboxname, const char *entry,
+/* low-level interface for use by mbdump routines.
+ * Requires an open transaction. */
+int annotatemore_write_entry(const char *mboxname, uint32_t uid,
+			     const char *entry,
 			     const char *userid,
-			     const char *value, const char *contenttype,
-			     size_t size, time_t modifiedsince,
-			     struct txn **tid);
-int annotatemore_commit(struct txn *tid);
-int annotatemore_abort(struct txn *tid);
+			     const struct buf *value);
 
 /* rename the annotations for 'oldmboxname' to 'newmboxname'
  * if 'olduserid' is non-NULL then the private annotations
  * for 'olduserid' are renamed to 'newuserid'
+ * Uses its own transaction.
  */
 int annotatemore_rename(const char *oldmboxname, const char *newmboxname,
 			const char *olduserid, const char *newuserid);
+/* Handle a message COPY, by copying all the appropriate
+ * per-message annotations. Requires an open transaction. */
+int annotate_msg_copy(const char *oldmboxname, uint32_t olduid,
+		      const char *newmboxname, uint32_t newuid,
+		      const char *userid);
 
-/* delete the annotations for 'mboxname' */
-int annotatemore_delete(const char *mboxname);
+/* delete the annotations for 'mbentry'
+ * Uses its own transaction. */
+int annotatemore_delete(const struct mboxlist_entry *mbentry);
+
+/* Open a new transaction. Any currently open transaction
+ * is aborted. */
+int annotatemore_begin(void);
+/* Abort the current transaction */
+void annotatemore_abort(void);
+/* Commit the current transaction */
+int annotatemore_commit(void);
 
 /* close the database */
 void annotatemore_close(void);

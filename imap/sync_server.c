@@ -286,8 +286,8 @@ int service_init(int argc __attribute__((unused)),
     quotadb_open(NULL);
 
     /* Initialize the annotatemore extention */
-    annotatemore_init(0, NULL, NULL);
-    annotatemore_open(NULL);
+    annotatemore_init(NULL, NULL);
+    annotatemore_open();
 
     /* Open the statuscache so we can invalidate seen states */
     if (config_getswitch(IMAPOPT_STATUSCACHE)) {
@@ -355,6 +355,10 @@ int service_main(int argc __attribute__((unused)),
 
     sync_in = prot_new(0, 0);
     sync_out = prot_new(1, 1);
+
+    /* Force use of LITERAL+ so we don't need two way communications */
+    prot_setisclient(sync_in, 1);
+    prot_setisclient(sync_out, 1);
 
     /* Find out name of client host */
     salen = sizeof(sync_remoteaddr);
@@ -1183,14 +1187,19 @@ static int mailbox_compare_update(struct mailbox *mailbox,
     struct index_record rrecord;
     uint32_t recno = 1;
     struct dlist *ki;
+    struct sync_annot_list *mannots = NULL;
+    struct sync_annot_list *rannots = NULL;
     int r;
     int i;
 
     rrecord.uid = 0;
     for (ki = kr->head; ki; ki = ki->next) {
-	r = parse_upload(ki, mailbox, &mrecord);
+	sync_annot_list_free(&mannots);
+	sync_annot_list_free(&rannots);
+
+	r = parse_upload(ki, mailbox, &mrecord, &mannots);
 	if (r) {
-	    syslog(LOG_ERR, "SYNCERROR: failed to parse uploaded record"); 
+	    syslog(LOG_ERR, "SYNCERROR: failed to parse uploaded record");
 	    return IMAP_PROTOCOL_ERROR;
 	}
 
@@ -1206,31 +1215,35 @@ static int mailbox_compare_update(struct mailbox *mailbox,
 	    if (r) {
 		syslog(LOG_ERR, "IOERROR: failed to read record %s %u",
 		       mailbox->name, recno);
-		return r;
+		goto out;
 	    }
 	    recno++;
 	}
 
 	/* found a match, check for updates */
 	if (rrecord.uid == mrecord.uid) {
-	    /* GUID mismatch on a non-expunged record is an error straight away */
+	    /* higher modseq on the replica is an error */
+	    if (rrecord.modseq > mrecord.modseq) {
+	        syslog(LOG_ERR, "SYNCERROR: higher modseq on replica %s %u",
+		       mailbox->name, mrecord.uid);
+	        r = IMAP_SYNC_CHECKSUM;
+		goto out;
+	    }
+
+	    /* everything else only matters if we're not expunged */
 	    if (!(mrecord.system_flags & FLAG_EXPUNGED)) {
 		if (!message_guid_equal(&mrecord.guid, &rrecord.guid)) {
 		    syslog(LOG_ERR, "SYNCERROR: guid mismatch %s %u",
 			   mailbox->name, mrecord.uid);
-		    return IMAP_SYNC_CHECKSUM;
+		    r = IMAP_SYNC_CHECKSUM;
+		    goto out;
 		}
 		if (rrecord.system_flags & FLAG_EXPUNGED) {
 		    syslog(LOG_ERR, "SYNCERROR: expunged on replica %s %u",
 			   mailbox->name, mrecord.uid);
-		    return IMAP_SYNC_CHECKSUM;
+		    r = IMAP_SYNC_CHECKSUM;
+		    goto out;
 		}
-	    }
-	    /* higher modseq on the replica is an error */
-	    if (rrecord.modseq > mrecord.modseq) {
-		syslog(LOG_ERR, "SYNCERROR: higher modseq on replica %s %u",
-		       mailbox->name, mrecord.uid);
-		return IMAP_SYNC_CHECKSUM;
 	    }
 
 	    /* skip out on the first pass */
@@ -1243,20 +1256,37 @@ static int mailbox_compare_update(struct mailbox *mailbox,
 				   (rrecord.system_flags & FLAG_UNLINKED);
 	    for (i = 0; i < MAX_USER_FLAGS/32; i++)
 		rrecord.user_flags[i] = mrecord.user_flags[i];
+
+	    r = read_annotations(mailbox, &rrecord, &rannots);
+	    if (r) {
+		syslog(LOG_ERR, "Failed to read local annotations %s %u: %s",
+		       mailbox->name, recno, error_message(r));
+		goto out;
+	    }
+
+	    r = apply_annotations(mailbox, &rrecord, rannots, mannots, 0);
+	    if (r) {
+		syslog(LOG_ERR, "Failed to write merged annotations %s %u: %s",
+		       mailbox->name, recno, error_message(r));
+		goto out;
+	    }
+
 	    rrecord.silent = 1;
 	    r = mailbox_rewrite_index_record(mailbox, &rrecord);
 	    if (r) {
 		syslog(LOG_ERR, "IOERROR: failed to rewrite record %s %u",
 		       mailbox->name, recno);
-		return r;
+		goto out;
 	    }
 	}
 
 	/* not found and less than LAST_UID, bogus */
 	else if (mrecord.uid <= mailbox->i.last_uid) {
 	    /* Expunged, just skip it */
-	    if (!(mrecord.system_flags & FLAG_EXPUNGED))
-		return IMAP_SYNC_CHECKSUM;
+	    if (!(mrecord.system_flags & FLAG_EXPUNGED)) {
+		r = IMAP_SYNC_CHECKSUM;
+		goto out;
+	    }
 	}
 
 	/* after LAST_UID, it's an append, that's OK */
@@ -1265,16 +1295,21 @@ static int mailbox_compare_update(struct mailbox *mailbox,
 	    if (!doupdate) continue;
 
 	    mrecord.silent = 1;
-	    r = sync_append_copyfile(mailbox, &mrecord);
+	    r = sync_append_copyfile(mailbox, &mrecord, mannots);
 	    if (r) {
 		syslog(LOG_ERR, "IOERROR: failed to append file %s %d",
 		       mailbox->name, recno);
-		return r;
+		goto out;
 	    }
 	}
     }
 
-    return 0;
+    r = 0;
+
+out:
+    sync_annot_list_free(&mannots);
+    sync_annot_list_free(&rannots);
+    return r;
 }
 
 static int do_mailbox(struct dlist *kin)
@@ -1460,8 +1495,9 @@ static int do_mailbox(struct dlist *kin)
 /* ====================================================================== */
 
 static int getannotation_cb(const char *mailbox __attribute__((unused)),
+			    uint32_t uid __attribute__((unused)),
 			    const char *entry, const char *userid,
-			    struct annotation_data *attrib,
+			    const struct buf *value,
 			    void *rock)
 {
     const char *mboxname = (char *)rock;
@@ -1471,7 +1507,7 @@ static int getannotation_cb(const char *mailbox __attribute__((unused)),
     dlist_setatom(kl, "MBOXNAME", mboxname);
     dlist_setatom(kl, "ENTRY", entry);
     dlist_setatom(kl, "USERID", userid);
-    dlist_setatom(kl, "VALUE", attrib->value);
+    dlist_setmap(kl, "VALUE", value->s, value->len);
     sync_send_response(kl, sync_out);
     dlist_free(&kl);
 
@@ -1481,8 +1517,8 @@ static int getannotation_cb(const char *mailbox __attribute__((unused)),
 static int do_getannotation(struct dlist *kin)
 {
     const char *mboxname = kin->sval;
-    return annotatemore_findall(mboxname, "*", &getannotation_cb,
-				(void *)mboxname, NULL);
+    return annotatemore_findall(mboxname, 0, "*", &getannotation_cb,
+				(void *)mboxname);
 }
 
 static void print_quota(struct quota *q)
@@ -1768,9 +1804,12 @@ static int do_annotation(struct dlist *kin)
     struct attvaluelist *attvalues = NULL;
     const char *mboxname = NULL;
     const char *entry = NULL;
-    const char *value = NULL;
+    const char *mapval = NULL;
+    size_t maplen = 0;
+    struct buf value = BUF_INITIALIZER;
     const char *userid = NULL;
     char *name = NULL;
+    annotate_scope_t scope;
     int r;
 
     if (!dlist_getatom(kin, "MBOXNAME", &mboxname))
@@ -1779,18 +1818,27 @@ static int do_annotation(struct dlist *kin)
 	return IMAP_PROTOCOL_BAD_PARAMETERS;
     if (!dlist_getatom(kin, "USERID", &userid))
 	return IMAP_PROTOCOL_BAD_PARAMETERS;
-    if (!dlist_getatom(kin, "VALUE", &value))
+    if (!dlist_getmap(kin, "VALUE", &mapval, &maplen))
 	return IMAP_PROTOCOL_BAD_PARAMETERS;
+    buf_init_ro(&value, mapval, maplen);
 
     /* annotatemore_store() expects external mailbox names,
        so translate the separator character */
     name = xstrdup(mboxname);
     mboxname_hiersep_toexternal(sync_namespacep, name, 0);
 
-    appendattvalue(&attvalues, *userid ? "value.priv" : "value.shared", value);
+    appendattvalue(&attvalues,
+		   *userid ? "value.priv" : "value.shared",
+		   &value);
     appendentryatt(&entryatts, entry, attvalues);
-    r = annotatemore_store(name, entryatts, sync_namespacep,
-			   sync_userisadmin, userid, sync_authstate);
+    annotate_scope_init_mailbox(&scope, name);
+
+    r = annotatemore_begin();
+    if (!r)
+	r = annotatemore_store(&scope, entryatts, sync_namespacep,
+			       sync_userisadmin, userid, sync_authstate);
+    if (!r)
+	annotatemore_commit();
 
     freeentryatts(entryatts);
     free(name);
@@ -1805,7 +1853,9 @@ static int do_unannotation(struct dlist *kin)
     const char *mboxname = NULL;
     const char *entry = NULL;
     const char *userid = NULL;
+    struct buf empty = BUF_INITIALIZER;
     char *name = NULL;
+    annotate_scope_t scope;
     int r;
 
     if (!dlist_getatom(kin, "MBOXNAME", &mboxname))
@@ -1820,10 +1870,18 @@ static int do_unannotation(struct dlist *kin)
     name = xstrdup(mboxname);
     mboxname_hiersep_toexternal(sync_namespacep, name, 0);
 
-    appendattvalue(&attvalues, *userid ? "value.priv" : "value.shared", NULL);
+    appendattvalue(&attvalues,
+		   *userid ? "value.priv" : "value.shared",
+		   &empty);
     appendentryatt(&entryatts, entry, attvalues);
-    r = annotatemore_store(name, entryatts, sync_namespacep,
-			   sync_userisadmin, userid, sync_authstate);
+    annotate_scope_init_mailbox(&scope, name);
+
+    r = annotatemore_begin();
+    if (!r)
+	r = annotatemore_store(&scope, entryatts, sync_namespacep,
+			       sync_userisadmin, userid, sync_authstate);
+    if (!r)
+	annotatemore_commit();
 
     freeentryatts(entryatts);
     free(name);

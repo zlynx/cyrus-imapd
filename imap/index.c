@@ -90,6 +90,9 @@ static void index_refresh(struct index_state *state);
 static void index_tellexists(struct index_state *state);
 static int index_lock(struct index_state *state);
 static void index_unlock(struct index_state *state);
+// extern struct namespace imapd_namespace;
+
+static void index_checkflags(struct index_state *state, int dirty);
 
 int index_writeseen(struct index_state *state);
 void index_fetchmsg(struct index_state *state,
@@ -138,10 +141,12 @@ static int _index_search(unsigned **msgno_list, struct index_state *state,
 static int index_copysetup(struct index_state *state, uint32_t msgno, struct copyargs *copyargs);
 static int index_storeflag(struct index_state *state, uint32_t msgno,
 			   struct storeargs *storeargs);
+static int index_store_annotation(struct index_state *state, uint32_t msgno,
+			   struct storeargs *storeargs);
 static int index_fetchreply(struct index_state *state, uint32_t msgno,
 			    const struct fetchargs *fetchargs);
-static void index_printflags(struct index_state *state, uint32_t msgno, int usinguid);
-static void index_checkflags(struct index_state *state, int dirty);
+static void index_printflags(struct index_state *state, uint32_t msgno,
+			     int usinguid, int printmodseq);
 static char *get_localpart_addr(const char *header);
 static char *get_displayname(const char *header);
 static char *index_extract_subject(const char *subj, size_t len, int *is_refwd);
@@ -150,6 +155,8 @@ static void index_get_ids(MsgData *msgdata,
 			  char *envtokens[], const char *headers, unsigned size);
 static MsgData *index_msgdata_load(struct index_state *state, unsigned *msgno_list, int n,
 				   struct sortcrit *sortcrit);
+static struct seqset *_index_vanished(struct index_state *state,
+				      struct vanished_params *params);
 
 static void *index_sort_getnext(MsgData *node);
 static void index_sort_setnext(MsgData *node, MsgData *next);
@@ -170,11 +177,9 @@ static void index_thread_print(struct index_state *state,
 static void index_thread_ref(struct index_state *state,
 			     unsigned *msgno_list, int nmsg, int usinguid);
 
-static void index_select(struct index_state *state);
-static struct seqset *_index_vanished(struct index_state *state,
-				      struct vanished_params *params);
 static struct seqset *_parse_sequence(struct index_state *state,
 				      const char *sequence, int usinguid);
+static void massage_header(char *hdr);
 
 /* NOTE: Make sure these are listed in CAPABILITY_STRING */
 static const struct thread_algorithm thread_algs[] = {
@@ -213,7 +218,6 @@ int index_open(const char *name, struct index_init *init,
 {
     int r;
     struct index_state *state = xzmalloc(sizeof(struct index_state));
-    struct seqset *vanishedlist = NULL;
 
     if (init) {
 	if (init->examine_mode) {
@@ -249,44 +253,10 @@ int index_open(const char *name, struct index_init *init,
 
     /* have to get the vanished list while we're still locked */
     if (init && init->vanished.uidvalidity == state->mailbox->i.uidvalidity) {
-	vanishedlist = _index_vanished(state, &init->vanished);
+	init->vanishedlist = _index_vanished(state, &init->vanished);
     }
 
     index_unlock(state);
-
-    if (init && init->select && state->myrights & ACL_READ) {
-	index_select(state);
-
-	if (init->vanished.uidvalidity == state->mailbox->i.uidvalidity) {
-	    const char *sequence = init->vanished.sequence;
-	    struct index_map *im;
-	    uint32_t msgno;
-	    struct seqset *seq = _parse_sequence(state, sequence, 1);
-
-	    /* QRESYNC response:
-	     * UID FETCH seq FLAGS (CHANGEDSINCE modseq VANISHED)
-	     */
-
-	    if (vanishedlist && vanishedlist->len) {
-		char *vanished = seqset_cstring(vanishedlist);
-		prot_printf(state->out, "* VANISHED (EARLIER) %s\r\n", vanished);
-		free(vanished);
-	    }
-
-	    for (msgno = 1; msgno <= state->exists; msgno++) {
-		im = &state->map[msgno-1];
-		if (sequence && !seqset_ismember(seq, im->record.uid))
-		    continue;
-		if (im->record.modseq <= init->vanished.modseq)
-		    continue;
-		index_printflags(state, msgno, 1);
-	    }
-
-	    seqset_free(seq);
-	}
-    }
-
-    seqset_free(vanishedlist);
 
     *stateptr = state;
 
@@ -612,7 +582,7 @@ modseq_t index_highestmodseq(struct index_state *state)
     return state->highestmodseq;
 }
 
-static void index_select(struct index_state *state)
+void index_select(struct index_state *state, struct index_init *init)
 {
     index_tellexists(state);
 
@@ -629,6 +599,42 @@ static void index_select(struct index_state *state)
     prot_printf(state->out, "* OK [HIGHESTMODSEQ " MODSEQ_FMT "] Ok\r\n",
 		state->highestmodseq);
     prot_printf(state->out, "* OK [URLMECH INTERNAL] Ok\r\n");
+
+    /*
+     * RFC5257.  Note that we must report a maximum size for annotations
+     * but we don't enforce any such limit, so pick a "large" number.
+     */
+    prot_printf(state->out, "* OK [ANNOTATIONS %u] Ok\r\n", 64*1024);
+
+    if (init->vanishedlist) {
+	char *vanished;
+	const char *sequence = NULL;
+	struct seqset *seq = NULL;
+	struct index_map *im;
+	uint32_t msgno;
+
+	/* QRESYNC response:
+	 * UID FETCH seq FLAGS (CHANGEDSINCE modseq VANISHED)
+	  */
+
+	vanished = seqset_cstring(init->vanishedlist);
+	if (vanished) {
+	    prot_printf(state->out, "* VANISHED (EARLIER) %s\r\n", vanished);
+	    free(vanished);
+	}
+
+	sequence = init->vanished.sequence;
+	if (sequence) seq = _parse_sequence(state, sequence, 1);
+	for (msgno = 1; msgno <= state->exists; msgno++) {
+	    im = &state->map[msgno-1];
+	    if (sequence && !seqset_ismember(seq, im->record.uid))
+		continue;
+	    if (im->record.modseq <= init->vanished.modseq)
+		continue;
+	    index_printflags(state, msgno, 1, 0);
+	}
+	seqset_free(seq);
+    }
 }
 
 /*
@@ -670,7 +676,7 @@ int index_check(struct index_state *state, int usinguid, int printuid)
     index_refresh(state);
 
     /* any updates? */
-    index_tellchanges(state, usinguid, printuid);
+    index_tellchanges(state, usinguid, printuid, 0);
 
 #if TOIMSP
     if (state->firstnotseen) {
@@ -858,7 +864,7 @@ void index_fetchresponses(struct index_state *state,
 int index_fetch(struct index_state *state,
 		const char *sequence,
 		int usinguid,
-		struct fetchargs *fetchargs,
+		const struct fetchargs *fetchargs,
 		int *fetchedsomething)
 {
     struct seqset *seq;
@@ -911,7 +917,7 @@ int index_fetch(struct index_state *state,
 
     seqset_free(seq);
 
-    index_tellchanges(state, usinguid, usinguid);
+    index_tellchanges(state, usinguid, usinguid, 0);
 
     return r;
 }
@@ -953,19 +959,59 @@ int index_store(struct index_state *state, char *sequence, int usinguid,
     storeargs->update_time = time((time_t *)0);
     storeargs->usinguid = usinguid;
 
+    if (storeargs->operation == STORE_ANNOTATION) {
+	r = annotatemore_begin();
+	if (r) goto out;
+    }
+
     for (msgno = 1; msgno <= state->exists; msgno++) {
 	im = &state->map[msgno-1];
 	checkval = usinguid ? im->record.uid : msgno;
 	if (!seqset_ismember(seq, checkval))
 	    continue;
-	r = index_storeflag(state, msgno, storeargs);
+
+	/* if it's expunged already, skip it now */
+	if (im->record.system_flags & FLAG_EXPUNGED)
+	    continue;
+
+	/* if it's changed already, skip it now */
+	if (im->record.modseq > storeargs->unchangedsince) {
+	    if (!storeargs->modified) {
+		unsigned int maxval = (storeargs->usinguid ?
+					state->last_uid : state->exists);
+		storeargs->modified = seqset_init(maxval, SEQ_SPARSE);
+	    }
+	    seqset_add(storeargs->modified,
+		       (storeargs->usinguid ? im->record.uid : msgno),
+		       /*ismember*/1);
+	    continue;
+	}
+
+	switch (storeargs->operation) {
+	case STORE_ADD_FLAGS:
+	case STORE_REMOVE_FLAGS:
+	case STORE_REPLACE_FLAGS:
+	    r = index_storeflag(state, msgno, storeargs);
+	    break;
+
+	case STORE_ANNOTATION:
+	    r = index_store_annotation(state, msgno, storeargs);
+	    break;
+
+	default:
+	    r = IMAP_INTERNAL;
+	    break;
+	}
 	if (r) goto out;
     }
 
 out:
+    if (storeargs->operation == STORE_ANNOTATION && !r)
+	annotatemore_commit();
     seqset_free(seq);
     index_unlock(state);
-    index_tellchanges(state, usinguid, usinguid);
+    index_tellchanges(state, usinguid, usinguid,
+		      (storeargs->unchangedsince != ~0ULL));
 
     return r;
 }
@@ -1308,16 +1354,12 @@ int index_sort(struct index_state *state, struct sortcrit *sortcrit,
     unsigned *msgno_list;
     MsgData *msgdata = NULL, *freeme = NULL;
     int nmsg;
-    clock_t start;
     modseq_t highestmodseq = 0;
     int i, modseq = 0;
 
     /* update the index */
     if (index_check(state, 0, 0))
 	return 0;
-
-    if(CONFIG_TIMING_VERBOSE)
-	start = clock();
 
     if (searchargs->modseq) modseq = 1;
     else {
@@ -1367,37 +1409,6 @@ int index_sort(struct index_state *state, struct sortcrit *sortcrit,
 	prot_printf(state->out, " (MODSEQ " MODSEQ_FMT ")", highestmodseq);
 
     prot_printf(state->out, "\r\n");
-
-    /* debug */
-    if (CONFIG_TIMING_VERBOSE) {
-	int len;
-	static const char * const key_names[] = {
-	    "SEQUENCE", "ARRIVAL", "CC", "DATE", "FROM",
-	    "SIZE", "SUBJECT", "TO", "ANNOTATION", "MODSEQ",
-	    "DISPLAYFROM", "DISPLAYTO"
-	};
-	char buf[1024] = "";
-
-	while (sortcrit->key && sortcrit->key < VECTOR_SIZE(key_names)) {
-	    if (sortcrit->flags & SORT_REVERSE)
-		strlcat(buf, "REVERSE ", sizeof(buf));
-
-	    strlcat(buf, key_names[sortcrit->key], sizeof(buf));
-
-	    switch (sortcrit->key) {
-	    case SORT_ANNOTATION:
-		len = strlen(buf);
-		snprintf(buf + len, sizeof(buf) - len,
-			 " \"%s\" \"%s\"",
-			 sortcrit->args.annot.entry, sortcrit->args.annot.attrib);
-		break;
-	    }
-	    if ((++sortcrit)->key) strlcat(buf, " ", sizeof(buf));
-	}
-
-	syslog(LOG_DEBUG, "SORT (%s) processing time: %d msg in %f sec",
-	       buf, nmsg, (clock() - start) / (double) CLOCKS_PER_SEC);
-    }
 
     return nmsg;
 }
@@ -1459,7 +1470,9 @@ index_copy(struct index_state *state,
 	   int usinguid,
 	   char *name, 
 	   char **copyuidp,
-	   int nolink)
+	   int nolink,
+	   struct namespace *namespace,
+	   int isadmin)
 {
     static struct copyargs copyargs;
     int i;
@@ -1501,7 +1514,8 @@ index_copy(struct index_state *state,
 	totalsize += copyargs.copymsg[i].size;
 
     r = append_setup(&appendstate, name, state->userid,
-		     state->authstate, ACL_INSERT, totalsize);
+		     state->authstate, ACL_INSERT, totalsize,
+		     namespace, isadmin);
     if (r) return r;
 
     docopyuid = (appendstate.myrights & ACL_READ);
@@ -2331,7 +2345,7 @@ static void index_tellexists(struct index_state *state)
 }
 
 void index_tellchanges(struct index_state *state, int canexpunge,
-		       int printuid)
+		       int printuid, int printmodseq)
 {
     uint32_t msgno;
     struct index_map *im;
@@ -2352,9 +2366,75 @@ void index_tellchanges(struct index_state *state, int canexpunge,
 
 	/* report if it's changed since last told */
 	if (im->record.modseq > im->told_modseq)
-	    index_printflags(state, msgno, printuid);
+	    index_printflags(state, msgno, printuid, printmodseq);
     }
 }
+
+struct fetch_annotation_rock {
+    struct protstream *pout;
+    const char *sep;
+};
+
+static void fetch_annotation_response(const char *mboxname
+					__attribute__((unused)),
+				      uint32_t uid
+					__attribute__((unused)),
+				      const char *entry,
+				      struct attvaluelist *attvalues,
+				      void *rock)
+{
+    char sep2 = '(';
+    struct attvaluelist *l;
+    struct fetch_annotation_rock *frock = rock;
+
+    prot_printf(frock->pout, "%s", frock->sep);
+    prot_printastring(frock->pout, entry);
+    prot_putc(' ', frock->pout);
+
+    for (l = attvalues ; l ; l = l->next) {
+	prot_putc(sep2, frock->pout);
+	sep2 = ' ';
+	prot_printastring(frock->pout, l->attrib);
+	prot_putc(' ', frock->pout);
+	prot_printmap(frock->pout, l->value.s, l->value.len);
+    }
+    prot_putc(')', frock->pout);
+
+    frock->sep = " ";
+}
+
+/*
+ * Helper function to send FETCH data for the ANNOTATION
+ * fetch item.
+ */
+static int index_fetchannotations(struct index_state *state,
+				  uint32_t msgno,
+				  const struct fetchargs *fetchargs)
+{
+    annotate_scope_t scope;
+    struct fetch_annotation_rock rock;
+    int r = 0;
+
+    annotate_scope_init_message(&scope, state->mailbox,
+				state->map[msgno-1].record.uid);
+
+    memset(&rock, 0, sizeof(rock));
+    rock.pout = state->out;
+    rock.sep = "";
+
+    r = annotatemore_fetch(&scope,
+			   &fetchargs->entries,
+			   &fetchargs->attribs,
+			   fetchargs->namespace,
+			   fetchargs->isadmin,
+			   fetchargs->userid,
+			   fetchargs->authstate,
+			   fetch_annotation_response, &rock,
+			   0);
+
+    return r;
+}
+
 /*
  * Helper function to send * FETCH (FLAGS data.
  * Does not send the terminating close paren or CRLF.
@@ -2409,7 +2489,8 @@ static void index_fetchflags(struct index_state *state,
 }
 
 static void index_printflags(struct index_state *state,
-			     uint32_t msgno, int usinguid)
+			     uint32_t msgno, int usinguid,
+			     int printmodseq)
 {
     struct index_map *im = &state->map[msgno-1];
 
@@ -2419,7 +2500,7 @@ static void index_printflags(struct index_state *state,
      * untagged FETCH unsolicited responses */
     if (usinguid || state->qresync)
 	prot_printf(state->out, " UID %u", im->record.uid);
-    if (state->qresync)
+    if (printmodseq || state->qresync)
 	prot_printf(state->out, " MODSEQ (" MODSEQ_FMT ")", im->record.modseq);
     prot_printf(state->out, ")\r\n");
 }
@@ -2495,6 +2576,13 @@ static int index_fetchreply(struct index_state *state, uint32_t msgno,
     if (fetchitems & FETCH_SIZE) {
 	prot_printf(state->out, "%cRFC822.SIZE %u", 
 		    sepchar, im->record.size);
+	sepchar = ' ';
+    }
+    if ((fetchitems & FETCH_ANNOTATION)) {
+	prot_printf(state->out, "%cANNOTATION (", sepchar);
+	r = index_fetchannotations(state, msgno, fetchargs);
+	r = 0;
+	prot_printf(state->out, ")");
 	sepchar = ' ';
     }
     if (fetchitems & FETCH_ENVELOPE) {
@@ -2853,7 +2941,7 @@ int index_urlfetch(struct index_state *state, uint32_t msgno,
 }
 
 /*
- * Helper function to perform a generalized STORE command
+ * Helper function to perform a STORE command for flags.
  */
 static int index_storeflag(struct index_state *state, uint32_t msgno,
 			   struct storeargs *storeargs)
@@ -2866,23 +2954,16 @@ static int index_storeflag(struct index_state *state, uint32_t msgno,
     struct index_map *im = &state->map[msgno-1];
     int r;
 
-    /* if it's changed already, skip out now */
-    if (im->record.modseq > storeargs->unchangedsince) return 0;
-
-    /* if it's expunged already, skip out now */
-    if (im->record.system_flags & FLAG_EXPUNGED)
-	return 0;
-
     oldmodseq = im->record.modseq;
 
     /* Change \Seen flag */
     if (state->myrights & ACL_SETSEEN) {
 	old = im->isseen ? 1 : 0;
 	new = old;
-	if (storeargs->operation == STORE_REPLACE)
+	if (storeargs->operation == STORE_REPLACE_FLAGS)
 	    new = storeargs->seen ? 1 : 0;
 	else if (storeargs->seen)
-	    new = (storeargs->operation == STORE_ADD) ? 1 : 0;
+	    new = (storeargs->operation == STORE_ADD_FLAGS) ? 1 : 0;
 
 	if (new != old) {
 	    state->numunseen += (old - new);
@@ -2895,7 +2976,7 @@ static int index_storeflag(struct index_state *state, uint32_t msgno,
     old = im->record.system_flags;
     new = storeargs->system_flags;
 
-    if (storeargs->operation == STORE_REPLACE) {
+    if (storeargs->operation == STORE_REPLACE_FLAGS) {
 	if (!(state->myrights & ACL_WRITE)) {
 	    /* ACL_DELETE handled in index_store() */
 	    if ((old & FLAG_DELETED) != (new & FLAG_DELETED)) {
@@ -2924,7 +3005,7 @@ static int index_storeflag(struct index_state *state, uint32_t msgno,
 	    }
 	}
     }
-    else if (storeargs->operation == STORE_ADD) {
+    else if (storeargs->operation == STORE_ADD_FLAGS) {
 	if (~old & new) {
 	    dirty++;
 	    im->record.system_flags = old | new;
@@ -2936,7 +3017,7 @@ static int index_storeflag(struct index_state *state, uint32_t msgno,
 	    }
 	}
     }
-    else { /* STORE_REMOVE */
+    else { /* STORE_REMOVE_FLAGS */
 	if (old & new) {
 	    dirty++;
 	    im->record.system_flags &= ~storeargs->system_flags;
@@ -2982,12 +3063,131 @@ static int index_storeflag(struct index_state *state, uint32_t msgno,
     return 0;
 }
 
+/*
+ * Helper function to perform a STORE command for annotations
+ */
+static int index_store_annotation(struct index_state *state,
+				  uint32_t msgno,
+				  struct storeargs *storeargs)
+{
+    modseq_t oldmodseq;
+    struct mailbox *mailbox = state->mailbox;
+    struct index_map *im = &state->map[msgno-1];
+    annotate_scope_t scope;
+    int r;
+
+    oldmodseq = im->record.modseq;
+
+    annotate_scope_init_message(&scope, state->mailbox,
+				im->record.uid);
+
+    r = annotatemore_store(&scope,
+			   storeargs->entryatts,
+			   storeargs->namespace,
+			   storeargs->isadmin,
+			   storeargs->userid,
+			   storeargs->authstate);
+    if (r) return r;
+
+    /* It would be nice if the annotate layer told us whether it
+     * actually made a change to the database, but it doesn't, so
+     * we have to assume the message is dirty */
+
+    r = mailbox_rewrite_index_record(mailbox, &im->record);
+    if (r) return r;
+
+    /* if it's silent and unchanged, update the seen value */
+    if (storeargs->silent && im->told_modseq == oldmodseq)
+	im->told_modseq = im->record.modseq;
+
+    return 0;
+}
+
+
 int _search_searchbuf(char *s, comp_pat *p, struct buf *b)
 {
     if (!b->len)
 	return 0;
 
     return charset_searchstring(s, p, b->s, b->len);
+}
+
+struct search_annot_rock {
+    int result;
+    const struct buf *match;
+};
+
+static int _search_annot_match(const struct buf *match,
+			       const struct buf *value)
+{
+    /* These cases are not explicitly defined in RFC5257 */
+
+    /* NIL matches NIL and nothing else */
+    if (match->s == NULL)
+	return (value->s == NULL);
+    if (value->s == NULL)
+	return 0;
+
+    /* empty matches empty and nothing else */
+    if (match->len == 0)
+	return (value->len == 0);
+    if (value->len == 0)
+	return 0;
+
+    /* RFC5257 seems to define a simple CONTAINS style search */
+    return !!memmem(value->s, value->len,
+		    match->s, match->len);
+}
+
+static void _search_annot_callback(const char *mboxname
+				    __attribute__((unused)),
+				   uint32_t uid
+				    __attribute__((unused)),
+				   const char *entry
+				    __attribute__((unused)),
+				   struct attvaluelist *attvalues,
+				   void *rock)
+{
+    struct search_annot_rock *sarock = rock;
+    struct attvaluelist *l;
+
+    for (l = attvalues ; l ; l = l->next) {
+	if (_search_annot_match(sarock->match, &l->value))
+	    sarock->result = 1;
+    }
+}
+
+static int _search_annotation(struct index_state *state,
+			      uint32_t msgno,
+			      struct searchannot *sa)
+{
+    strarray_t entries = STRARRAY_INITIALIZER;
+    strarray_t attribs = STRARRAY_INITIALIZER;
+    annotate_scope_t scope;
+    struct search_annot_rock rock;
+    int r;
+
+    strarray_append(&entries, sa->entry);
+    strarray_append(&attribs, sa->attrib);
+
+    annotate_scope_init_message(&scope, state->mailbox,
+				state->map[msgno-1].record.uid);
+
+    memset(&rock, 0, sizeof(rock));
+    rock.match = &sa->value;
+
+    r = annotatemore_fetch(&scope,
+			    &entries, &attribs,
+			    sa->namespace, sa->isadmin,
+			    sa->userid, sa->auth_state,
+			    _search_annot_callback, &rock,
+			    0);
+    if (r >= 0)
+	r = rock.result;
+
+    strarray_fini(&entries);
+    strarray_fini(&attribs);
+    return r;
 }
 
 /*
@@ -3006,6 +3206,7 @@ static int index_search_evaluate(struct index_state *state,
     struct seqset *seq;
     struct mailbox *mailbox = state->mailbox;
     struct index_map *im = &state->map[msgno-1];
+    struct searchannot *sa;
 
     if ((searchargs->flags & SEARCH_RECENT_SET) && !im->isrecent)
 	return 0;
@@ -3122,6 +3323,11 @@ static int index_search_evaluate(struct index_state *state,
 		!_search_searchbuf(l->s, l->p, cacheitem_buf(&im->record, CACHE_SUBJECT)))
 		return 0;
 	}
+    }
+
+    for (sa = searchargs->annotations ; sa ; sa = sa->next) {
+	if (!_search_annotation(state, msgno, sa))
+	    return 0;
     }
 
     for (s = searchargs->sublist; s; s = s->next) {
@@ -3578,10 +3784,20 @@ static MsgData *index_msgdata_load(struct index_state *state,
 	    case SORT_TO:
 		cur->to = get_localpart_addr(cacheitem_base(&im->record, CACHE_TO));
 		break;
- 	    case SORT_ANNOTATION:
- 		/* fetch attribute value - we fake it for now */
-		strarray_append(&cur->annot, sortcrit[j].args.annot.attrib);
+ 	    case SORT_ANNOTATION: {
+		struct buf value = BUF_INITIALIZER;
+
+		annotatemore_msg_lookup(state->mailbox->name,
+					im->record.uid,
+					sortcrit[j].args.annot.entry,
+					sortcrit[j].args.annot.userid,
+					&value);
+
+		/* buf_release() never returns NULL, so if the lookup
+		 * fails for any reason we just get an empty string here */
+		strarray_append(&cur->annot, buf_release(&value));
  		break;
+	    }
 	    case LOAD_IDS:
 		index_get_ids(cur, envtokens, cacheitem_base(&im->record, CACHE_HEADERS),
 					      cacheitem_size(&im->record, CACHE_HEADERS));
@@ -3870,6 +4086,7 @@ void index_get_ids(MsgData *msgdata, char *envtokens[], const char *headers,
 	/* allocate some space for refs */
 	/* find references */
 	refstr = buf.s;
+	massage_header(refstr);
 	while ((ref = find_msgid(refstr, &refstr)) != NULL)
 	    strarray_appendm(&msgdata->ref, ref);
     }

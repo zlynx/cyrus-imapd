@@ -1,6 +1,6 @@
-/* lmtpd.h -- Program to deliver mail to a mailbox
+/* tok.h -- utility for string tokenisation
  *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
+ * Copyright (c) 2011 Carnegie Mellon University.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -39,58 +39,42 @@
  * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * $Id: lmtpd.h,v 1.6 2010/01/06 17:01:35 murch Exp $
+ * Author: Greg Banks
+ * Based on his tok_t class from ggcov.sf.net
  */
 
-#ifndef LMTPD_H
-#define LMTPD_H
+#ifndef __CYRUS_TOK_H__
+#define __CYRUS_TOK_H__
 
-#include "append.h"
-#include "auth.h"
-#include "lmtpengine.h"
-#include "mboxname.h"
-#include "message.h"
+#include <config.h>
+#include <sys/types.h>
+#include "xmalloc.h"
 
-/* data per message */
-typedef struct deliver_data {
-    message_data_t *m;
-    struct message_content *content;
+typedef struct
+{
+    char *buf;
+    char *state;
+    const char *sep;
+    char *curr;
+#define _TOK_FIRST	(1<<0)
+#define TOK_TRIMLEFT	(1<<1)	/* trim whitespace from start of tokens */
+#define TOK_TRIMRIGHT	(1<<2)	/* trim whitespace from end of tokens */
+#define TOK_EMPTY	(1<<3)	/* return empty "" tokens if adjacent
+				 * delimiter characters are present */
+#define TOK_FREEBUFFER	(1<<4)	/* tok_t should free() the buffer when done */
+    unsigned int flags;
+} tok_t;
 
-    int cur_rcpt;
+#define TOK_INITIALIZER(str, sep, flags) \
+    { xstrdup((str)), NULL, (sep), NULL, (flags)|_TOK_FIRST|TOK_FREEBUFFER }
 
-    struct stagemsg *stage;	/* staging location for single instance
-				   store */
-    char *notifyheader;
-    const char *temp[2];	/* used to avoid extra indirection in
-				   getenvelope() */
+void tok_init(tok_t *, const char *buf, const char *sep, int flags);
+void tok_initm(tok_t *, char *buf, const char *sep, int flags);
+void tok_fini(tok_t *);
 
-    struct namespace *namespace;
+/* advance to the next token and return it */
+char *tok_next(tok_t *);
+/* return offset into the buffer of the current token, for error messages */
+unsigned int tok_offset(const tok_t *);
 
-    char *authuser;		/* user who submitted message */
-    struct auth_state *authstate;
-} deliver_data_t;
-
-/* forward declarations */
-extern int deliver_local(deliver_data_t *mydata,
-			 const strarray_t *flags,
-			 const char *username,
-			 const char *mailboxname);
-
-extern int deliver_mailbox(FILE *f,
-			   struct message_content *content,
-			   struct stagemsg *stage,
-			   unsigned size,
-			   const strarray_t *flags,
-			   char *authuser,
-			   struct auth_state *authstate,
-			   char *id,
-			   const char *user,
-			   char *notifyheader,
-			   const char *mailboxname,
-			   char *date,
-			   int quotaoverride,
-			   int acloverride);
-
-extern int fuzzy_match(char *mboxname);
-
-#endif /* LMTPD_H */
+#endif /* __CYRUS_TOK_H__ */

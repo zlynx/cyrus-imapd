@@ -508,8 +508,8 @@ int service_init(int argc __attribute__((unused)),
     }
 
     /* Initialize the annotatemore extention */
-    annotatemore_init(0, NULL, NULL);
-    annotatemore_open(NULL);
+    annotatemore_init(NULL, NULL);
+    annotatemore_open();
 
     newsmaster = (char *) config_getstring(IMAPOPT_NEWSMASTER);
     newsmaster_authstate = auth_newstate(newsmaster);
@@ -2004,10 +2004,9 @@ static void cmd_authinfo_pass(char *pass)
     int failedloginpause;
     /* Conceal password in telemetry log */
     if (nntp_logfd != -1 && pass) {
-	int r; /* avoid warnings */
-	r = ftruncate(nntp_logfd,
+	(void)ftruncate(nntp_logfd,
 		  lseek(nntp_logfd, -2, SEEK_CUR) - strlen(pass));
-	r = write(nntp_logfd, "...\r\n", 5);
+	(void)write(nntp_logfd, "...\r\n", 5);
     }
 
     if (nntp_authstate) {
@@ -2078,10 +2077,9 @@ static void cmd_authinfo_sasl(char *cmd, char *mech, char *resp)
 
     /* Conceal initial response in telemetry log */
     if (nntp_logfd != -1 && resp) {
-	int r; /* avoid warnings */
-	r = ftruncate(nntp_logfd,
+	(void)ftruncate(nntp_logfd,
 		  lseek(nntp_logfd, -2, SEEK_CUR) - strlen(resp));
-	r = write(nntp_logfd, "...\r\n", 5);
+	(void)write(nntp_logfd, "...\r\n", 5);
     }
 
     if (nntp_userid) {
@@ -2578,9 +2576,10 @@ static int do_newsgroups(char *name, void *rock)
  * annotatemore_findall() callback function to LIST NEWSGROUPS
  */
 int newsgroups_cb(const char *mailbox,
+		  uint32_t uid __attribute__((unused)),
 		  const char *entry __attribute__((unused)),
 		  const char *userid,
-		  struct annotation_data *attrib, void *rock)
+		  const struct buf *value, void *rock)
 {
     struct wildmat *wild = (struct wildmat *) rock;
 
@@ -2600,7 +2599,7 @@ int newsgroups_cb(const char *mailbox,
     if (userid[0]) return 0;
 
     prot_printf(nntp_out, "%s\t%s\r\n", mailbox+strlen(newsprefix),
-		attrib->value);
+		value->s);
 
     return 0;
 }
@@ -2700,8 +2699,8 @@ static void cmd_list(char *arg1, char *arg2)
 
 	strcpy(pattern, newsprefix);
 	strcat(pattern, "*");
-	annotatemore_findall(pattern, "/comment",
-			     newsgroups_cb, lrock.wild, NULL);
+	annotatemore_findall(pattern, 0, "/comment",
+			     newsgroups_cb, lrock.wild);
 
 	prot_printf(nntp_out, ".\r\n");
 
@@ -2899,8 +2898,8 @@ struct message_data {
     char *path;			/* path */
     char *control;		/* control message */
     unsigned long size;		/* size of message in bytes */
-
     strarray_t rcpt;		/* mailboxes to post message */
+    char *date;			/* date field of header */ 
 
     hdrcache_t hdrcache;
 };
@@ -2917,6 +2916,7 @@ int msg_new(message_data_t **m)
     ret->control = NULL;
     ret->size = 0;
     strarray_init(&ret->rcpt);
+    ret->date = NULL;
 
     ret->hdrcache = spool_new_hdrcache();
 
@@ -2926,21 +2926,14 @@ int msg_new(message_data_t **m)
 
 void msg_free(message_data_t *m)
 {
-    if (m->data) {
+    if (m->data)
 	prot_free(m->data);
-    }
-    if (m->f) {
+    if (m->f)
 	fclose(m->f);
-    }
-    if (m->id) {
-	free(m->id);
-    }
-    if (m->path) {
-	free(m->path);
-    }
-    if (m->control) {
-	free(m->control);
-    }
+    free(m->id);
+    free(m->path);
+    free(m->control);
+    free(m->date);
 
     strarray_fini(&m->rcpt);
 
@@ -2994,7 +2987,6 @@ static int savemsg(message_data_t *m, FILE *f)
 	"Reply-To",	/* need to add "post" email addresses */
 	NULL
     };
-    int addlen;
 
     m->f = f;
 
@@ -3011,7 +3003,6 @@ static int savemsg(message_data_t *m, FILE *f)
     /* now, using our header cache, fill in the data that we want */
 
     /* get path */
-    addlen = strlen(config_servername) + 1;
     if ((body = spool_getheader(m->hdrcache, "path")) != NULL) {
 	/* prepend to the cached path */
 	m->path = strconcat(config_servername, "!", body[0], (char *)NULL);
@@ -3045,8 +3036,12 @@ static int savemsg(message_data_t *m, FILE *f)
 	char datestr[RFC822_DATETIME_MAX+1];
 
 	time_to_rfc822(now, datestr, sizeof(datestr));
+	m->date = xstrdup(datestr);
 	fprintf(f, "Date: %s\r\n", datestr);
 	spool_cache_header(xstrdup("Date"), xstrdup(datestr), m->hdrcache);
+    }
+    else {
+	m->date = xstrdup(body[0]);
     }
 
     /* get control */
@@ -3260,15 +3255,17 @@ static int deliver_remote(message_data_t *msg, struct dest *dlist)
 static int deliver(message_data_t *msg)
 {
     int n, r = 0, myrights;
-    char *rcpt = NULL, *local_rcpt = NULL;
+    char *rcpt = NULL;
     unsigned long uid;
     struct body *body = NULL;
     struct dest *dlist = NULL;
+    duplicate_key_t dkey = {msg->id, NULL, msg->date};
 
     /* check ACLs of all mailboxes */
     for (n = 0; n < msg->rcpt.count; n++) {
 	struct mboxlist_entry *mbentry = NULL;
 	rcpt = msg->rcpt.data[n];
+	dkey.to = rcpt;
 
 	/* look it up */
 	r = mlookup(rcpt, &mbentry);
@@ -3289,32 +3286,32 @@ static int deliver(message_data_t *msg)
 	    struct appendstate as;
 
 	    if (msg->id && 
-		duplicate_check(msg->id, strlen(msg->id), rcpt, strlen(rcpt))) {
+		duplicate_check(&dkey)) {
 		/* duplicate message */
-		duplicate_log(msg->id, rcpt, "nntp delivery");
+		duplicate_log(&dkey, "nntp delivery");
 		continue;
 	    }
 
-	    r = append_setup(&as, rcpt, nntp_userid, nntp_authstate, ACL_POST, 0);
+	    r = append_setup(&as, rcpt, nntp_userid, nntp_authstate,
+			     ACL_POST, 0, NULL, 0);
 
 	    if (!r) {
 		prot_rewind(msg->data);
 		if (stage) {
 		    r = append_fromstage(&as, &body, stage, 0,
-					 NULL, !singleinstance);
+					 NULL, !singleinstance,
+					 /*annotations*/NULL);
 		} else {
 		    /* XXX should never get here */
 		    r = append_fromstream(&as, &body, msg->data, msg->size, 0,
 					  (const char **) NULL, 0);
 		}
-		if (r || (msg->id &&   
-			  duplicate_check(msg->id, strlen(msg->id),
-					  rcpt, strlen(rcpt)))) {  
+		if (r || ( msg->id && duplicate_check(&dkey) ) ) {    
 		    append_abort(&as);
                    
 		    if (!r) {
 			/* duplicate message */
-			duplicate_log(msg->id, rcpt, "nntp delivery");
+			duplicate_log(&dkey, "nntp delivery");
 			continue;
 		    }            
 		}                
@@ -3324,15 +3321,12 @@ static int deliver(message_data_t *msg)
 	    }
 
 	    if (!r && msg->id)
-		duplicate_mark(msg->id, strlen(msg->id), rcpt, strlen(rcpt),
-			       time(NULL), uid);
+		duplicate_mark(&dkey, time(NULL), uid);
 
 	    if (r) {
 		mboxlist_entry_free(&mbentry);
 		return r;
 	    }
-
-	    local_rcpt = rcpt;
 	}
 	mboxlist_entry_free(&mbentry);
     }
@@ -3501,7 +3495,8 @@ static int cancel(message_data_t *msg)
     /* store msgid of cancelled message for IHAVE/CHECK/TAKETHIS
      * (in case we haven't received the message yet)
      */
-    duplicate_mark(msgid, strlen(msgid), "", 0, 0, time(NULL));
+    duplicate_key_t dkey = {msgid, "", ""};
+    duplicate_mark(&dkey, 0, time(NULL));
 
     return r;
 }
@@ -3772,7 +3767,7 @@ static void feedpeer(char *peer, message_data_t *msg)
 
 static void news2mail(message_data_t *msg)
 {
-    struct annotation_data attrib;
+    struct buf attrib = BUF_INITIALIZER;
     int n, r;
     FILE *sm;
     static strarray_t smbuf = STRARRAY_INITIALIZER;
@@ -3792,19 +3787,21 @@ static void news2mail(message_data_t *msg)
 
     for (n = 0; n < msg->rcpt.count ; n++) {
 	/* see if we want to send this to a mailing list */
+	buf_free(&attrib);
 	r = annotatemore_lookup(msg->rcpt.data[n],
 				"/vendor/cmu/cyrus-imapd/news2mail", "",
 				&attrib);
 	if (r) continue;
 
 	/* add the email address to our argv[] and to our To: header */
-	if (attrib.value) {
-	    strarray_append(&smbuf, attrib.value);
+	if (attrib.s) {
+	    strarray_append(&smbuf, buf_cstring(&attrib));
 
 	    if (to[0]) strlcat(to, ", ", sizeof(to));
-	    strlcat(to, attrib.value, sizeof(to));
+	    strlcat(to, buf_cstring(&attrib), sizeof(to));
 	}
     }
+    buf_free(&attrib);
 
     /* send the message */
     if (smbuf.count > smbuf_basic_count) {
