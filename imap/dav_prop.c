@@ -1186,6 +1186,8 @@ int do_proppatch(struct proppatch_ctx *pctx, xmlNodePtr instr,
     /* Begin transaction */
     if (annotatemore_begin()) return HTTP_SERVER_ERROR;
 
+    memset(propstat, 0, NUM_PROPSTAT * sizeof(xmlNodePtr));
+
     /* Iterate through propertyupdate children */
     for (; instr; instr = instr->next) {
 	if (instr->type == XML_ELEMENT_NODE) {
