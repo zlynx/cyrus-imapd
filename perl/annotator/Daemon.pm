@@ -435,53 +435,43 @@ sub _read_args
     return $Data;
 }
 
-sub _print_string
+sub _format_string
 {
     my ($s) = @_;
 
-    if (!defined $s)
-    {
-	print "NIL";
-    }
-    elsif ($s =~ m/[\\"\012\015\200-\377]/)
-    {
+    return "NIL" unless defined $s;
+
+    my $len = length($s);
+
+    if ($len > 1024 || $s =~ m/[\\"\012\015\200-\377]/) {
 	# don't try to quote this, use a literal
-	printf "{%u}\r\n%s", length($s), $s;
+	return "{$len}\r\n$s";
     }
-    else
-    {
-	printf "\"%s\"", $s;
+    else {
+	return "\"$s\"";
     }
 }
 
 sub _emit_results
 {
     my ($self) = @_;
+    my @results;
     my $sep = '';
-
-    print "(";
 
     foreach my $a (@{$self->{annotations}})
     {
-	print $sep;
-	printf "ANNOTATION (%s (%s ",
-		$a->{entry},
-		($a->{shared} ? "value.shared" : "value.priv");
-	_print_string($a->{value});
-	print "))";
-	$sep = " ";
+	my $type = $a->{shared} ? "value.shared" : "value.priv";
+	my $value = _format_string($a->{value});
+	push @results, "ANNOTATION ($a->{entry} ($type $value))";
     }
 
     foreach my $f (@{$self->{flags}})
     {
-	print $sep;
-	printf "%s %s",
-		($f->{set} ? "+FLAGS" : "-FLAGS"),
-		$f->{flag};
-	$sep = " ";
+	my $op = $f->{set} ? "+FLAGS" : "-FLAGS";
+	push @results, "$op $f->{flag}";
     }
 
-    print ")\n";
+    print "(" . join(' ', @results) . ")\n";
 }
 
 sub process_request
@@ -494,23 +484,28 @@ sub process_request
 
 	$self->log(2, "Reading request");
 	my $ArgsString = _read_args();
-#  	printf STDERR "ArgsString=\"%s\"\n", $ArgsString;
-# 	die "DEBUGGING";
+	die "Failed to read args" unless $ArgsString;
 
 	my ($ArgsList, $Remainder) = _dlist_parse($ArgsString);
-#  	printf STDERR "ArgsList=%s\n", Dumper($ArgsList);
-#  	printf STDERR "Remainder=\"%s\"\n", $Remainder;
-# 	die "DEBUGGING";
+	die "Failed to parse args $ArgsString" unless $ArgsList;
 
 	my %ArgsHash = @$ArgsList;
-#  	printf STDERR "ArgsHash=%s\n", Dumper(\%ArgsHash);
-# 	die "DEBUGGING";
 
-	$ArgsHash{BODY} = _parse_bodystructure($ArgsHash{BODY}, 1, 1);
-#  	printf STDERR "BODY=%s", Dumper($ArgsHash{BODY});
-# 	die "DEBUGGING";
+	my $fh = IO::File->new("<$ArgsHash{FILENAME}")
+	    || die "Failed to read file $ArgsHash{FILENAME}";
 
-	$self->annotate_message(\%ArgsHash);
+	my $body = _parse_bodystructure($ArgsHash{BODY}, 1, 1)
+	    || die "Failed to parse bodystructure $ArgsHash{BODY}";
+
+	$self->annotate_message({
+	    FH => $fh,
+	    BODY => $body,
+	    ANNOTATIONS => $ArgsHash{ANNOTATIONS},
+	    FLAGS => $ArgsHash{FLAGS},
+	    GUID => $ArgsHash{GUID},
+	});
+
+	$fh->close();
 
 	$self->log(2, "Emitting result");
 	$self->_emit_results();
@@ -533,9 +528,10 @@ The I<$args> hash contains the following information from Cyrus.
 
 =over 4
 
-=item I<FILENAME>
+=item I<FH>
 
-is the absolute path to the new message file.  Do not modify this file.
+is a read-only IO:File handle to the spool file.  You can not change
+the content of the spool file.
 
 =item I<FLAGS>
 
@@ -552,6 +548,10 @@ is an array containing any annotations already proposed for the message
 is a structure closely based on the IMAP BODYSTRUCTURE, decoded into a
 hash, including recursively all MIME sections.  In general, the
 following items are defined for all body structures:
+
+=item I<GUID>
+
+is the hex encoded (40 character) sha1 of the spool file.
 
 =over 4
 

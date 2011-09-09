@@ -217,7 +217,6 @@ int append_setup(struct appendstate *as, const char *name,
 /* may return non-zero, indicating that the entire append has failed
  and the mailbox is probably in an inconsistent state. */
 int append_commit(struct appendstate *as, 
-		  quota_t quotacheck __attribute__((unused)),
 		  unsigned long *uidvalidity, 
 		  unsigned long *start,
 		  unsigned long *num,
@@ -600,6 +599,7 @@ static void callout_encode_args(struct buf *args,
     buf_appendcstr(args, " BODY ");
     message_write_body(args, body, 2);
 
+    buf_printf(args, " GUID %s", message_guid_encode(&body->guid));
     buf_putc(args, ')');
     buf_cstring(args);
 }
@@ -637,10 +637,10 @@ static void callout_decode_results(const char *callout,
 		struct dlist *dflag;
 		for (dflag = dd->head ; dflag ; dflag = dflag->next)
 		    if ((val = dlist_cstring(dflag)))
-			strarray_add(flags, lcase((char *)val));
+			strarray_add_case(flags, val);
 	    }
 	    else if ((val = dlist_cstring(dd))) {
-		strarray_add(flags, lcase((char *)val));
+		strarray_add_case(flags, val);
 	    }
 	}
 	else if (!strcasecmp(key, "-FLAGS")) {
@@ -648,11 +648,11 @@ static void callout_decode_results(const char *callout,
 		struct dlist *dflag;
 		for (dflag = dd->head ; dflag ; dflag = dflag->next) {
 		    if ((val = dlist_cstring(dflag)))
-			strarray_remove_all(flags, lcase((char *)val));
+			strarray_remove_all_case(flags, val);
 		}
 	    }
 	    else if ((val = dlist_cstring(dd))) {
-		strarray_remove_all(flags, lcase((char *)val));
+		strarray_remove_all_case(flags, val);
 	    }
 	}
 	else if (!strcasecmp(key, "ANNOTATION")) {
@@ -858,15 +858,11 @@ int append_fromstage(struct appendstate *as, struct body **body,
 	annotations = newannotations;
     }
     if (!r && annotations) {
-	annotate_scope_t scope;
-	annotate_scope_init_message(&scope, as->mailbox, record.uid);
-
-	r = annotatemore_store(&scope,
-			       annotations,
-			       as->namespace,
-			       as->isadmin,
-			       as->userid,
-			       as->auth_state);
+	annotate_state_t *astate = annotate_state_new();
+	annotate_state_set_auth(astate, as->namespace, as->isadmin,
+			        as->userid, as->auth_state);
+	annotate_state_set_message(astate, as->mailbox, record.uid);
+	r = annotate_state_store(astate, annotations);
 
 	if (r && !origannotations) {
 	    /* Nasty hack to log & ignore failed annotations from callout */
@@ -874,6 +870,7 @@ int append_fromstage(struct appendstate *as, struct body **body,
 			    "ignoring\n", error_message(r));
 	    r = 0;
 	}
+	annotate_state_free(&astate);
     }
     if (r)
 	goto out;

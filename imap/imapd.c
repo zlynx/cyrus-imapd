@@ -335,7 +335,7 @@ enum {
 };
 
 
-void motd_file(int fd);
+static void motd_file(void);
 void shut_down(int code);
 void fatal(const char *s, int code);
 
@@ -976,13 +976,20 @@ void service_abort(int error)
 }
 
 /*
- * found a motd file; spit out message and return
+ * Try to find a motd file; if found spit out message as an [ALERT]
  */
-void motd_file(int fd)
+static void motd_file(void)
 {
-    struct protstream *motd_in;
+    char *filename = NULL;
+    int fd = -1;
+    struct protstream *motd_in = NULL;
     char buf[MAX_MAILBOX_PATH+1];
     char *p;
+
+    filename = strconcat(config_dir, "/msg/motd", (char *)NULL);
+    fd = open(filename, O_RDONLY, 0);
+    if (fd < 0)
+	goto out;
 
     motd_in = prot_new(fd, 0);
 
@@ -990,8 +997,15 @@ void motd_file(int fd)
     if ((p = strchr(buf, '\r'))!=NULL) *p = 0;
     if ((p = strchr(buf, '\n'))!=NULL) *p = 0;
 
-    for(p = buf; *p == '['; p++); /* can't have [ be first char, sigh */
+    for (p = buf; *p == '['; p++); /* can't have [ be first char, sigh */
     prot_printf(imapd_out, "* OK [ALERT] %s\r\n", p);
+
+out:
+    if (motd_in)
+	prot_free(motd_in);
+    if (fd >= 0)
+	close(fd);
+    free(filename);
 }
 
 /*
@@ -1136,10 +1150,7 @@ static void imapd_check(struct backend *be, int usinguid)
  */
 void cmdloop(void)
 {
-    int fd;
-    char motdfilename[MAX_MAILBOX_PATH+1];
     int c;
-    int ret;
     int usinguid, havepartition, havenamespace, recursive;
     static struct buf tag, cmd, arg1, arg2, arg3;
     char *p, shut[MAX_MAILBOX_PATH+1], cmdname[100];
@@ -1157,18 +1168,7 @@ void cmdloop(void)
     }
     prot_printf(imapd_out, " server ready\r\n");
 
-    ret = snprintf(motdfilename, sizeof(motdfilename), "%s/msg/motd",
-		   config_dir);
-    
-    if(ret < 0 || ret >= (int) sizeof(motdfilename)) {
-       fatal("motdfilename buffer too small (configdirectory too long)",
-	     EC_CONFIG);
-    }
-    
-    if ((fd = open(motdfilename, O_RDONLY, 0)) != -1) {
-	motd_file(fd);
-	close(fd);
-    }
+    motd_file();
 
     /* Get command timer logging paramater. This string
      * is a time in seconds. Any command that takes >=
@@ -3517,7 +3517,7 @@ void cmd_append(char *tag, char *name, const char *cur_name)
 	}
 
 	if (!r) {
-	    r = append_commit(&appendstate, totalsize, &uidvalidity, &firstuid, &num, NULL);
+	    r = append_commit(&appendstate, &uidvalidity, &firstuid, &num, NULL);
 	} else {
 	    append_abort(&appendstate);
 	}
@@ -4525,7 +4525,6 @@ void cmd_store(char *tag, char *sequence, int usinguid)
     struct storeargs storeargs;
     static struct buf operation, flagname;
     int len, c;
-    strarray_t flags = STRARRAY_INITIALIZER;
     int flagsparsed = 0, inlist = 0;
     char *modified = NULL;
     int r;
@@ -4543,6 +4542,8 @@ void cmd_store(char *tag, char *sequence, int usinguid)
     /* local mailbox */
     memset(&storeargs, 0, sizeof storeargs);
     storeargs.unchangedsince = ~0ULL;
+    storeargs.usinguid = usinguid;
+    strarray_init(&storeargs.flags);
 
     c = prot_getc(imapd_in);
     if (c == '(') {
@@ -4682,7 +4683,7 @@ void cmd_store(char *tag, char *sequence, int usinguid)
 	    goto freeflags;
 	}
 	else
-	    strarray_append(&flags, flagname.s);
+	    strarray_append(&storeargs.flags, flagname.s);
 
 	flagsparsed++;
 	if (c != ' ') break;
@@ -4717,7 +4718,7 @@ notflagsdammit:
 		    index_highestmodseq(imapd_index));
     }
 
-    r = index_store(imapd_index, sequence, usinguid, &storeargs, &flags);
+    r = index_store(imapd_index, sequence, &storeargs);
 
     /* format the MODIFIED response code */
     if (storeargs.modified) {
@@ -4740,7 +4741,7 @@ notflagsdammit:
     }
 
  freeflags:
-    strarray_fini(&flags);
+    strarray_fini(&storeargs.flags);
     freeentryatts(storeargs.entryatts);
     seqset_free(storeargs.modified);
     free(modified);
@@ -7937,12 +7938,12 @@ static void cmd_getannotation(const char *tag, char *mboxpat)
     int c, r = 0;
     strarray_t entries = STRARRAY_INITIALIZER;
     strarray_t attribs = STRARRAY_INITIALIZER;
-    annotate_scope_t scope;
+    annotate_state_t *astate = annotate_state_new();
 
     c = parse_annotate_fetch_data(tag, /*permessage_flag*/0, &entries, &attribs);
     if (c == EOF) {
 	eatline(imapd_in, c);
-	return;
+	goto freeargs;
     }
 
     /* check for CRLF */
@@ -7955,15 +7956,13 @@ static void cmd_getannotation(const char *tag, char *mboxpat)
 	goto freeargs;
     }
 
-    annotate_scope_init_server(&scope);
-    if (mboxpat[0])
-	annotate_scope_init_mailbox(&scope, mboxpat);
+    annotate_state_set_auth(astate, &imapd_namespace,
+			    imapd_userisadmin || imapd_userisproxyadmin,
+			    imapd_userid, imapd_authstate);
+    annotate_state_set_mailbox(astate, mboxpat);
 
-    r = annotatemore_fetch(&scope, &entries, &attribs, &imapd_namespace,
-			   imapd_userisadmin || imapd_userisproxyadmin,
-			   imapd_userid, imapd_authstate,
-			   getannotation_response, NULL,
-			   0);
+    r = annotate_state_fetch(astate, &entries, &attribs,
+			     getannotation_response, NULL, 0);
 
     imapd_check(NULL, 0);
 
@@ -7974,11 +7973,10 @@ static void cmd_getannotation(const char *tag, char *mboxpat)
 		    tag, error_message(IMAP_OK_COMPLETED));
     }
 
-  freeargs:
+ freeargs:
+    annotate_state_free(&astate);
     strarray_fini(&entries);
     strarray_fini(&attribs);
-
-    return;
 }
 
 static void getmetadata_response(const char *mboxname,
@@ -8037,12 +8035,12 @@ static void cmd_getmetadata(const char *tag, char *mboxpat)
     int have_shared = 0;
     int have_private = 0;
     int i;
-    annotate_scope_t scope;
+    annotate_state_t *astate = annotate_state_new();
 
     c = parse_metadata_fetch_data(tag, &entries, &attribs);
     if (c == EOF) {
 	eatline(imapd_in, c);
-	return;
+	goto freeargs;
     }
 
     /* check for CRLF */
@@ -8131,16 +8129,15 @@ static void cmd_getmetadata(const char *tag, char *mboxpat)
     if (have_private) strarray_append(&newa, "value.priv");
     if (have_shared) strarray_append(&newa, "value.shared");
 
-    annotate_scope_init_server(&scope);
-    if (mboxpat[0])
-	annotate_scope_init_mailbox(&scope, mboxpat);
+    annotate_state_set_auth(astate, &imapd_namespace,
+			    imapd_userisadmin || imapd_userisproxyadmin,
+			    imapd_userid, imapd_authstate);
+    annotate_state_set_mailbox(astate, mboxpat);
 
     basesize = maxsize;
-    r = annotatemore_fetch(&scope, &newe, &newa, &imapd_namespace,
-			   imapd_userisadmin || imapd_userisproxyadmin,
-			   imapd_userid, imapd_authstate,
-			   getmetadata_response, NULL,
-			   sizeptr);
+    r = annotate_state_fetch(astate, &newe, &newa,
+			     getmetadata_response, NULL,
+			     sizeptr);
 
     imapd_check(NULL, 0);
 
@@ -8155,12 +8152,11 @@ static void cmd_getmetadata(const char *tag, char *mboxpat)
     }
 
   freeargs:
+    annotate_state_free(&astate);
     strarray_fini(&entries);
     strarray_fini(&attribs);
     strarray_fini(&newe);
     strarray_fini(&newa);
-
-    return;
 }
 
 /*
@@ -8172,12 +8168,12 @@ static void cmd_setannotation(const char *tag, char *mboxpat)
 {
     int c, r = 0;
     struct entryattlist *entryatts = NULL;
-    annotate_scope_t scope;
+    annotate_state_t *astate = annotate_state_new();
 
     c = parse_annotate_store_data(tag, 0, &entryatts);
     if (c == EOF) {
 	eatline(imapd_in, c);
-	return;
+	goto freeargs;
     }
 
     /* check for CRLF */
@@ -8190,15 +8186,13 @@ static void cmd_setannotation(const char *tag, char *mboxpat)
 	goto freeargs;
     }
 
-    annotate_scope_init_server(&scope);
-    if (mboxpat[0])
-	annotate_scope_init_mailbox(&scope, mboxpat);
+    annotate_state_set_auth(astate, &imapd_namespace, imapd_userisadmin,
+			    imapd_userid, imapd_authstate);
+    annotate_state_set_mailbox(astate, mboxpat);
 
     r = annotatemore_begin();
     if (!r)
-	r = annotatemore_store(&scope,
-			       entryatts, &imapd_namespace, imapd_userisadmin,
-			       imapd_userid, imapd_authstate);
+	r = annotate_state_store(astate, entryatts);
     if (!r)
 	annotatemore_commit();
 
@@ -8212,8 +8206,8 @@ static void cmd_setannotation(const char *tag, char *mboxpat)
     }
 
   freeargs:
+    annotate_state_free(&astate);
     if (entryatts) freeentryatts(entryatts);
-    return;
 }
 
 /*
@@ -8225,12 +8219,12 @@ static void cmd_setmetadata(const char *tag, char *mboxpat)
 {
     int c, r = 0;
     struct entryattlist *entryatts = NULL;
-    annotate_scope_t scope;
+    annotate_state_t *astate = annotate_state_new();
 
     c = parse_metadata_store_data(tag, &entryatts);
     if (c == EOF) {
 	eatline(imapd_in, c);
-	return;
+	goto freeargs;
     }
 
     /* check for CRLF */
@@ -8243,15 +8237,13 @@ static void cmd_setmetadata(const char *tag, char *mboxpat)
 	goto freeargs;
     }
 
-    annotate_scope_init_server(&scope);
-    if (mboxpat[0])
-	annotate_scope_init_mailbox(&scope, mboxpat);
+    annotate_state_set_auth(astate, &imapd_namespace, imapd_userisadmin,
+			    imapd_userid, imapd_authstate);
+    annotate_state_set_mailbox(astate, mboxpat);
 
     r = annotatemore_begin();
     if (!r)
-	r = annotatemore_store(&scope,
-			       entryatts, &imapd_namespace, imapd_userisadmin,
-			       imapd_userid, imapd_authstate);
+	r = annotate_state_store(astate, entryatts);
     if (!r)
 	annotatemore_commit();
 
@@ -8265,6 +8257,7 @@ static void cmd_setmetadata(const char *tag, char *mboxpat)
     }
 
   freeargs:
+    annotate_state_free(&astate);
     if (entryatts) freeentryatts(entryatts);
     return;
 }

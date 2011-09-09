@@ -1370,12 +1370,16 @@ int sync_mailbox(struct mailbox *mailbox,
 		 struct dlist *kl, struct dlist *kupload,
 		 int printrecords)
 {
-    int r;
+    int r = 0;
     char sync_crc[128];
+    annotate_db_t *user_annot_db = NULL;
+    int userannot = 0;
+
+    if (!annotate_getmailboxdb(mailbox->name, /*flags*/0, &user_annot_db))
+	userannot = 1;
 
     r = sync_crc_calc(mailbox, sync_crc, sizeof(sync_crc));
-    if (r)
-	return r;
+    if (r) goto done;
 
     dlist_setatom(kl, "UNIQUEID", mailbox->uniqueid);
     dlist_setatom(kl, "MBOXNAME", mailbox->name);
@@ -1402,8 +1406,7 @@ int sync_mailbox(struct mailbox *mailbox,
 	uint32_t recno;
 	int send_file;
 	uint32_t prevuid = 0;
-	struct sync_annot_list *annots;
-	int r;
+	struct sync_annot_list *annots = NULL;
 
 	for (recno = 1; recno <= mailbox->i.num_records; recno++) {
 	    /* we can't send bogus records */
@@ -1441,12 +1444,8 @@ int sync_mailbox(struct mailbox *mailbox,
 
 	    if (send_file) {
 		r = sync_send_file(mailbox, &record, part_list, kupload);
-		if (r) return r;
+		if (r) goto done;
 	    }
-
-	    r = read_annotations(mailbox, &record, &annots);
-	    if (r)
-		return r;
 
 	    il = dlist_newkvlist(rl, "RECORD");
 	    dlist_setnum32(il, "UID", record.uid);
@@ -1456,13 +1455,29 @@ int sync_mailbox(struct mailbox *mailbox,
 	    dlist_setdate(il, "INTERNALDATE", record.internaldate);
 	    dlist_setnum32(il, "SIZE", record.size);
 	    dlist_setatom(il, "GUID", message_guid_encode(&record.guid));
-	    encode_annotations(il, annots);
 
+	    if (userannot) {
+		r = read_annotations(mailbox, &record, &annots);
+		if (r) goto done;
+		encode_annotations(il, annots);
+	    }
+
+	    sync_annot_list_free(&annots);
+	}
+
+	r = read_annotations(mailbox, NULL, &annots);
+	if (r) goto done;
+
+	if (annots) {
+	    encode_annotations(kl, annots);
 	    sync_annot_list_free(&annots);
 	}
     }
 
-    return 0;
+done:
+    annotate_putdb(&user_annot_db);
+
+    return r;
 }
 
 int sync_parse_response(const char *cmd, struct protstream *in,
@@ -1605,6 +1620,7 @@ static int read_one_annot(const char *mailbox __attribute__((unused)),
  * for the message given by @mailbox and @record, returning them
  * as a new sync_annot_list.  The caller should free the new
  * list with sync_annot_list_free().
+ * If record is NULL, return the mailbox annotations
  *
  * Returns: non-zero on error,
  *	    resulting sync_annot_list in *@resp
@@ -1614,7 +1630,7 @@ int read_annotations(const struct mailbox *mailbox,
 		     struct sync_annot_list **resp)
 {
     *resp = NULL;
-    return annotatemore_findall(mailbox->name, record->uid,
+    return annotatemore_findall(mailbox->name, record ? record->uid : 0,
 				/* all entries*/"*",
 				read_one_annot, (void *)resp);
 }
@@ -1684,6 +1700,7 @@ int decode_annotations(/*const*/struct dlist *annots,
  * list of annotations to the local annotation database, storing new values
  * or deleting old values as necessary.  Manages its own annotations
  * transaction.
+ * Record may be null, to process mailbox annotations.
  */
 int apply_annotations(const struct mailbox *mailbox,
 		      const struct index_record *record,
@@ -1765,16 +1782,18 @@ int apply_annotations(const struct mailbox *mailbox,
 
 /* ====================================================================== */
 
-#define SYNC_CRC_BASIC	(1<<0)
+#define SYNC_CRC_BASIC		(1<<0)
+#define SYNC_CRC_ANNOTATIONS	(1<<1)
 
 struct sync_crc_algorithm {
     const char *name;
+    int preference;
     int (*setup)(int);
     void (*begin)(void);
-    void (*update)(const struct mailbox *, const struct index_record *, int);
+    void (*addrecord)(const struct mailbox *, const struct index_record *, int);
+    void (*addannot)(const struct sync_annot *);
     int (*end)(char *, int);
 };
-
 
 
 static bit32 sync_crc32;
@@ -1892,14 +1911,49 @@ static const char *sync_record_representation(
     return buf_cstring(&sync_crc32_buf);
 }
 
-static void sync_crc32_update(const struct mailbox *mailbox,
-			      const struct index_record *record,
-			      int cflags)
+static void sync_crc32_addrecord_xor(const struct mailbox *mailbox,
+				     const struct index_record *record,
+				     int cflags)
 {
     const char *rep = sync_record_representation(mailbox, record, cflags);
 
     if (rep)
 	sync_crc32 ^= crc32_cstring(rep);
+}
+
+static void sync_crc32_addrecord_plus(const struct mailbox *mailbox,
+				      const struct index_record *record,
+				      int cflags)
+{
+    const char *rep = sync_record_representation(mailbox, record, cflags);
+
+    if (rep)
+	sync_crc32 += crc32_cstring(rep);
+}
+
+static const char *sync_annot_representation(const struct sync_annot *annot)
+{
+    buf_reset(&sync_crc32_buf);
+    buf_printf(&sync_crc32_buf, "%s %s ", annot->entry, annot->userid);
+    buf_append(&sync_crc32_buf, &annot->value);
+
+    return buf_cstring(&sync_crc32_buf);
+}
+
+static void sync_crc32_addannot_xor(const struct sync_annot *annot)
+{
+    const char *rep = sync_annot_representation(annot);
+
+    if (rep)
+	sync_crc32 ^= crc32_cstring(rep);
+}
+
+static void sync_crc32_addannot_plus(const struct sync_annot *annot)
+{
+    const char *rep = sync_annot_representation(annot);
+
+    if (rep)
+	sync_crc32 += crc32_cstring(rep);
 }
 
 static int sync_crc32_end(char *buf, int maxlen)
@@ -1910,11 +1964,20 @@ static int sync_crc32_end(char *buf, int maxlen)
 
 static const struct sync_crc_algorithm sync_crc_algorithms[] = {
     { "CRC32",
+	1,
 	sync_crc32_setup,
 	sync_crc32_begin,
-	sync_crc32_update,
+	sync_crc32_addrecord_xor,
+	sync_crc32_addannot_xor,
 	sync_crc32_end },
-    { NULL, NULL, NULL, NULL, NULL }
+    { "CRC32M", /* modulo arithmetic */
+	2,
+	sync_crc32_setup,
+	sync_crc32_begin,
+	sync_crc32_addrecord_plus,
+	sync_crc32_addannot_plus,
+	sync_crc32_end },
+    { NULL, 0, NULL, NULL, NULL, NULL, NULL }
 };
 
 static const struct sync_crc_algorithm *find_algorithm(const char *string)
@@ -1922,20 +1985,21 @@ static const struct sync_crc_algorithm *find_algorithm(const char *string)
     char *b;	    /* temporary writable copy, for tokenising */
     char *word;
     const struct sync_crc_algorithm *alg;
+    const struct sync_crc_algorithm *ret = NULL;
     static const char sep[] = " \t,";
 
     b = xstrdup(string);
     for (word = strtok(b, sep) ; word != NULL ; word = strtok(NULL, sep)) {
 	for (alg = sync_crc_algorithms ; alg->name ; alg++) {
-	    if (!strcasecmp(alg->name, word)) {
-		free(b);
-		return alg;
-	    }
+	    if (ret && ret->preference >= alg->preference)
+		continue; /* already got one as good */
+	    if (!strcasecmp(alg->name, word))
+		ret = alg;
 	}
     }
 
     free(b);
-    return NULL;
+    return ret;
 }
 
 const char *sync_crc_list_algorithms(void)
@@ -1943,19 +2007,14 @@ const char *sync_crc_list_algorithms(void)
     static char *buf;
 
     if (!buf) {
-	/* TODO: we really need an expanding string class */
 	const struct sync_crc_algorithm *alg;
-	int len = 0;
+	strarray_t algos = STRARRAY_INITIALIZER;
 
 	for (alg = sync_crc_algorithms ; alg->name ; alg++)
-	    len += 1 + strlen(alg->name);
-	buf = xmalloc(len);
-	buf[0] = '\0';
-	for (alg = sync_crc_algorithms ; alg->name ; alg++) {
-	    if (buf[0])
-		strcat(buf, " ");
-	    strcat(buf, alg->name);
-	}
+	    strarray_append(&algos, alg->name);
+
+	buf = strarray_join(&algos, " ");
+	strarray_fini(&algos);
     }
 
     return buf;
@@ -1972,6 +2031,8 @@ static int covers_from_string(const char *str, int strict)
     for (p = strtok(b, sep) ; p ; p = strtok(NULL, sep)) {
 	if (!strcasecmp(p, "BASIC"))
 	    flags |= SYNC_CRC_BASIC;
+	else if (!strcasecmp(p, "ANNOTATIONS"))
+	    flags |= SYNC_CRC_ANNOTATIONS;
 	else if (strict) {
 	    flags = IMAP_INVALID_IDENTIFIER;
 	    goto done;
@@ -1990,12 +2051,14 @@ static const char *covers_to_string(int flags)
     buf[0] = '\0';
     if ((flags & SYNC_CRC_BASIC))
 	strcat(buf, " BASIC");
+    if ((flags & SYNC_CRC_ANNOTATIONS))
+	strcat(buf, " ANNOTATIONS");
     return (buf[0] ? buf+1 : NULL);
 }
 
 const char *sync_crc_list_covers(void)
 {
-    int cflags = SYNC_CRC_BASIC;
+    int cflags = SYNC_CRC_BASIC | SYNC_CRC_ANNOTATIONS;
     return covers_to_string(cflags);
 }
 
@@ -2031,7 +2094,7 @@ int sync_crc_setup(const char *algorithm, const char *covers,
 	    syslog(LOG_NOTICE, "unknown sync covers %s, using default",
 		   covers);
 	    cflags = 0;
-	} 
+	}
     }
 
     r = alg->setup(cflags);
@@ -2053,6 +2116,17 @@ const char *sync_crc_get_covers(void)
     return covers_to_string(sync_crc_covers);
 }
 
+static void calc_annots(struct sync_annot_list *annots)
+{
+    struct sync_annot *annot;
+
+    if (!annots) return;
+
+    for (annot = annots->head; annot; annot = annot->next) {
+	sync_crc_algorithm->addannot(annot);
+    }
+}
+
 /*
  * Calculate a sync CRC for the entire mailbox, and store the result
  * formatted as a nul-terminated ASCII string (suitable for use as an
@@ -2063,16 +2137,39 @@ int sync_crc_calc(struct mailbox *mailbox, char *buf, int maxlen)
 {
     struct index_record record;
     uint32_t recno;
+    struct sync_annot_list *annots = NULL;
+    int userannot = 0;
+    int r = 0;
+    annotate_db_t *user_annot_db = NULL;
 
     sync_crc_algorithm->begin();
+
+    if (!annotate_getmailboxdb(mailbox->name, /*flags*/0, &user_annot_db))
+	userannot = 1;
 
     for (recno = 1; recno <= mailbox->i.num_records; recno++) {
 	/* we can't send bogus records, just skip them! */
 	if (mailbox_read_index_record(mailbox, recno, &record))
 	    continue;
 
-	sync_crc_algorithm->update(mailbox, &record, sync_crc_covers);
+	sync_crc_algorithm->addrecord(mailbox, &record, sync_crc_covers);
+	if ((sync_crc_covers & SYNC_CRC_ANNOTATIONS) && userannot) {
+	    r = read_annotations(mailbox, &record, &annots);
+	    if (r) continue;
+	    calc_annots(annots);
+	    sync_annot_list_free(&annots);
+	}
     }
+
+    if ((sync_crc_covers & SYNC_CRC_ANNOTATIONS)) {
+	r = read_annotations(mailbox, NULL, &annots);
+	if (!r) {
+	    calc_annots(annots);
+	    sync_annot_list_free(&annots);
+	}
+    }
+
+    annotate_putdb(&user_annot_db);
 
     return sync_crc_algorithm->end(buf, maxlen);
 }
