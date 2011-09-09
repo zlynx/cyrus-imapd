@@ -2120,7 +2120,7 @@ static int meth_copy(struct transaction_t *txn)
 
 	if (!r) {
 	    /* Commit the append to the destination mailbox */
-	    if ((r = append_commit(&appendstate, -1,
+	    if ((r = append_commit(&appendstate,
 				   NULL, NULL, NULL, &dest_mbox))) {
 		syslog(LOG_ERR, "append_commit(%s) failed: %s",
 		       dest_mboxname, error_message(r));
@@ -3034,7 +3034,7 @@ static int meth_put(struct transaction_t *txn)
 
 	if (!r) {
 	    /* Commit the append to the calendar mailbox */
-	    if ((r = append_commit(&appendstate, size,
+	    if ((r = append_commit(&appendstate,
 				   NULL, NULL, NULL, &mailbox))) {
 		ret = HTTP_SERVER_ERROR;
 		*txn->errstr = "append_commit() failed";
