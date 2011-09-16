@@ -1007,12 +1007,13 @@ static int propfind_fromdb(const xmlChar *propname, xmlNsPtr ns,
 			   xmlNodePtr *propstat, void *ns_prefix)
 {
     char prop_annot[MAX_MAILBOX_PATH+1];
-    struct buf attrib = BUF_INITIALIZER;
+    static struct buf attrib = BUF_INITIALIZER;
     xmlNodePtr node;
     const char *value = NULL;
 
     if (ns_prefix) {
-	sprintf(prop_annot, "/vendor/cmu/cyrus-imapd/%s:%s",
+	snprintf(prop_annot, sizeof(prop_annot),
+		 "/vendor/cmu/cyrus-imapd/%s:%s",
 		(const char *) ns_prefix, BAD_CAST propname);
     }
     else {
@@ -1058,8 +1059,9 @@ static int proppatch_todb(xmlNodePtr prop, unsigned set,
     int r;
 
     if (ns_prefix) {
-	sprintf(prop_annot, "/vendor/cmu/cyrus-imapd/%s:%s",
-		(const char *) ns_prefix, BAD_CAST prop->name);
+	snprintf(prop_annot, sizeof(prop_annot),
+		 "/vendor/cmu/cyrus-imapd/%s:%s",
+		 (const char *) ns_prefix, BAD_CAST prop->name);
     }
     else {
 	/* "dead" property - use hash of the namespace href as prefix */
