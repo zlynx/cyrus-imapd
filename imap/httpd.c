@@ -2824,9 +2824,16 @@ static int meth_mkcol(struct transaction_t *txn)
 
     if (instr) {
 	/* Start construction of our mkcol/mkcalendar response */
-	outdoc = init_prop_response(txn->meth[3] == 'A' ?
-				    "mkcalendar-response" : "mkcol-response",
-				    &root, root->nsDef, ns);
+	if (!(root = init_prop_response(txn->meth[3] == 'A' ?
+					"mkcalendar-response" :
+					"mkcol-response",
+					root->nsDef, ns))) {
+	    ret = HTTP_SERVER_ERROR;
+	    *txn->errstr = "Unable to create XML response";
+	    goto done;
+	}
+
+	outdoc = root->doc;
 
 	/* Populate our proppatch context */
 	pctx.req_tgt = &txn->req_tgt;
@@ -2912,7 +2919,7 @@ static int meth_propfind(struct transaction_t *txn)
     const char **hdr;
     unsigned depth;
     xmlDocPtr indoc = NULL, outdoc = NULL;
-    xmlNodePtr root, cur;
+    xmlNodePtr root, cur = NULL;
     xmlNsPtr ns[NUM_NAMESPACE];
     char mailboxname[MAX_MAILBOX_BUFFER];
     struct propfind_ctx fctx;
@@ -2967,7 +2974,13 @@ static int meth_propfind(struct transaction_t *txn)
     }
 
     /* Start construction of our multistatus response */
-    outdoc = init_prop_response("multistatus", &root, root->nsDef, ns);
+    if (!(root = init_prop_response("multistatus", root->nsDef, ns))) {
+	ret = HTTP_SERVER_ERROR;
+	*txn->errstr = "Unable to create XML response";
+	goto done;
+    }
+
+    outdoc = root->doc;
 
     /* Parse the list of properties and build a list of callbacks */
     preload_proplist(cur->children, &elist);
@@ -3077,7 +3090,13 @@ static int meth_proppatch(struct transaction_t *txn)
     instr = root->children;
 
     /* Start construction of our multistatus response */
-    outdoc = init_prop_response("multistatus", &root, root->nsDef, ns);
+    if (!(root = init_prop_response("multistatus", root->nsDef, ns))) {
+	ret = HTTP_SERVER_ERROR;
+	*txn->errstr = "Unable to create XML response";
+	goto done;
+    }
+
+    outdoc = root->doc;
 
     /* Add a response tree to 'root' for the specified href */
     resp = xmlNewChild(root, NULL, BAD_CAST "response", NULL);
@@ -3479,7 +3498,13 @@ static int meth_report(struct transaction_t *txn)
     }
 
     /* Start construction of our multistatus response */
-    outdoc = init_prop_response("multistatus", &root, root->nsDef, ns);
+    if (!(root = init_prop_response("multistatus", root->nsDef, ns))) {
+	ret = HTTP_SERVER_ERROR;
+	*txn->errstr = "Unable to create XML response";
+	goto done;
+    }
+
+    outdoc = root->doc;
 
     /* Parse the list of properties and build a list of callbacks */
     preload_proplist(cur->children, &elist);
