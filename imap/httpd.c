@@ -497,7 +497,7 @@ int service_main(int argc __attribute__((unused)),
 		 char **argv __attribute__((unused)),
 		 char **envp __attribute__((unused)))
 {
-    char *localip, *remoteip;
+    const char *localip, *remoteip;
     sasl_security_properties_t *secprops=NULL;
     const char *mechlist, *mech;
     int mechcount = 0, schemecount;;
