@@ -5,6 +5,10 @@
  *      Author: James Cassell
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #include "flags.h"
 #include "imparse.h"
 #include "strarray.h"
