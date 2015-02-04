@@ -49,7 +49,25 @@ AC_PREREQ([2.63])
 AC_CONFIG_SRCDIR([imap/imapd.c])
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_MACRO_DIR([cmulocal])
-AC_CANONICAL_SYSTEM
+AC_CANONICAL_TARGET
+
+dnl Want the generic OS name without version info.
+AC_MSG_CHECKING([Platform])
+case $target_os in
+netbsd*)
+	dnl Installed packages found under /usr/pkg.
+	CFLAGS="-I/usr/pkg/include $CFLAGS"
+	CPPFLAGS="-I/usr/pkg/include $CPPFLAGS"
+	LDFLAGS="-L/usr/pkg/lib $LDFLAGS"
+	;;
+*)
+	dnl Generic assumption about extra local software.
+	CFLAGS="-I/usr/local/include $CFLAGS"
+	CPPFLAGS="-I/usr/local/include $CPPFLAGS"
+	LDFLAGS="-L/usr/local/lib $LDFLAGS"
+	;;
+esac
+AC_MSG_RESULT([$target_os "$CFLAGS" "$LDFLAGS"])
 
 AM_INIT_AUTOMAKE([-Wall -Werror -Wno-portability foreign dist-bzip2 no-installinfo subdir-objects])
 AC_CONFIG_LIBOBJ_DIR([lib])
@@ -224,7 +242,7 @@ if test "$use_berkeley" != "no"; then
   CYRUS_BERKELEY_DB_CHK()
 
   if test "$dblib" = "no"; then
-    AC_MSG_ERROR([Berkeley DB 3.x or later was not found.  You may need to 
+    AC_MSG_ERROR([Berkeley DB 3.x or later was not found.  You may need to
     supply the --with-bdb-libdir or --with-bdb-incdir configure options.])
   fi
 
@@ -402,7 +420,11 @@ if test "$enable_sieve" != "no"; then
 	AM_PROG_LEX
 
 	if test "$enable_pcre" != "no"; then
-	    AC_CHECK_HEADER(pcreposix.h)
+	    AC_CHECK_HEADERS([pcreposix.h],[],[],[[
+/* Silence autoconf warning with an include block.
+ * Nothing extra to include.
+ */
+	    ]])
 	    if test "$ac_cv_header_pcreposix_h" = "yes"; then
 		    AC_MSG_CHECKING(for utf8 enabled pcre)
 		    AC_CACHE_VAL(cyrus_cv_pcre_utf8, AC_TRY_CPP([#include <pcreposix.h>
@@ -664,7 +686,7 @@ AC_ARG_ENABLE([afs],
 AC_ARG_WITH(afs-libdir,
 	[AS_HELP_STRING([--with-afs-libdir=DIR], [use AFS libraries from DIR [/usr/lib]])],
 	afs_libdir="${withval}", afs_libdir="/usr/lib")
- 
+
 AC_ARG_WITH(afs-incdir,
 	[AS_HELP_STRING([--with-afs-incdir=DIR], [use AFS headers from DIR [/usr/include]])],
 	afs_incdir="${withval}", afs_incdir="/usr/include")
@@ -672,7 +694,7 @@ AC_ARG_WITH(afs-incdir,
 AC_ARG_WITH(ldap,
 	[AS_HELP_STRING([--with-ldap=DIR], [use LDAP (in DIR) (experimental) [/usr/local]])],
 	with_ldap="${withval}", with_ldap="no")
-  
+
 dnl select mode of afspts
 AC_ARG_ENABLE(krb5afspts,
 	[AS_HELP_STRING([--enable-krb5afspts], [compile afskrb PTS module with krb5 support])])
@@ -680,7 +702,7 @@ AC_ARG_ENABLE(krb5afspts,
 if test "x$enable_afs" = "xyes"; then
 # krb5afspts is only valid if AFS is enabled, so check inside here.
     AS_IF([test "x$enable_krb5afspts" = "xyes"], [SASL_SET_GSSAPI_LIBS
-      AC_DEFINE(AFSPTS_USE_KRB5,[],[Should the AFS PTS plugin use krb5?])    
+      AC_DEFINE(AFSPTS_USE_KRB5,[],[Should the AFS PTS plugin use krb5?])
     ])
 
     CFLAGS="${CFLAGS} -I${with_afs_incdir}/include"
@@ -813,7 +835,7 @@ AC_CHECK_LIB(resolv,res_search)
 
 if test "$with_statickrb" = "yes" -a ! -d "$with_krb"; then
       AC_MSG_ERROR([--enable-statickrb specified but --with-krb did not specify a valid directory])
-fi 
+fi
 
 if test "$with_krb" != "no"; then
 dnl Do we need DES for kerberos?
@@ -1054,7 +1076,7 @@ AC_ARG_ENABLE(event-notification,
 
 if test "$enable_event_notification" != "no"; then
     PKG_CHECK_MODULES([JANSSON], [jansson >= 2.0],
-	[check_jansson=true] 
+	[check_jansson=true]
 	  dnl call AC_SUBST macro to support pkg-config version older that 0.24 without any bad consequence for recent version
 	  [AC_SUBST([JANSSON_LIBS])]
 	  [AC_SUBST([JANSSON_CFLAGS])]
@@ -1148,7 +1170,7 @@ dnl
 	if test "$opendkimlib" = "yes"; then
 	    AC_SUBST(DKIM_CFLAGS)
 	    AC_SUBST(DKIM_LIBS)
-	    AC_DEFINE(WITH_DKIM,[],[Build DKIM support into iSchedule?]) 
+	    AC_DEFINE(WITH_DKIM,[],[Build DKIM support into iSchedule?])
 	fi
 
 	AC_EGREP_HEADER(ICAL_SCHEDULESTATUS_PARAMETER, ical.h,
@@ -1198,10 +1220,17 @@ if test -z "$with_com_err"; then
 		# guess we're okay
 		# can use system com_err
 		with_com_err=""
-		AC_CHECK_HEADER(et/com_err.h,
-		  [AC_DEFINE(HAVE_ET_COM_ERR_H,[],[We need et/com_err.h])],
-		  [AC_CHECK_HEADER(com_err.h,[],[AC_MSG_ERROR([cannot locate com_err.h])])])
-		AC_PATH_PROG(COMPILE_ET, compile_et, [no compile et])
+		AC_CHECK_HEADERS([et/com_err.h krb5/com_err.h com_err.h],[],[],[[
+#ifdef __NetBSD__
+/* NetBSD /usr/include/krb5/com_err.h requires these extras. */
+#include <stdlib.h>
+#include <stdarg.h>
+#endif
+		]])
+
+		dnl Search for compile_et(1), but if not found fall back to false(1),
+		dnl When false(1), it will force the use of the builtin version.
+		AC_PATH_PROGS([COMPILE_ET],[compile_et false],[no],[/usr/pkg/bin /usr/local/bin /usr/bin /bin])
 	], [
 	if test -f /usr/local/include/com_err.h -o -f /usr/local/include/et/com_err.h; then
 		with_com_err="/usr/local"
@@ -1355,7 +1384,7 @@ if test "${with_perl}" != no; then
     if test ${using_static_sasl} = "staticonly"; then
 	AC_MSG_WARN([Cannot compile perl utilities using static libsasl])
 	with_perl="no"
-    else 
+    else
 	AC_CHECK_PROGS(PERL, ${with_perl} perl, with_perl=notfound)
     fi
 fi
@@ -1404,7 +1433,7 @@ for flag in ${ldflags} ${default_ldflags}; do
       isdir=yes
       ;;
 
-    -L*) 
+    -L*)
       # attached -L option: split off the directory
       larg=`echo $flag | sed -e 's:-L\(..*\):\1:'`
       libpath="${libpath} ${larg}"
@@ -1520,11 +1549,17 @@ AH_BOTTOM([
 
 /* com_err.h, as needed */
 #ifndef IN_COM_ERR
-#ifdef HAVE_ET_COM_ERR_H
-#include <et/com_err.h>
-#else
-#include <com_err.h>
-#endif /* HAVE_ET_COM_ERR_H */
+# if defined(HAVE_ET_COM_ERR_H)
+#  include <et/com_err.h>
+# elif defined(HAVE_KRB5_COM_ERR_H)
+#  include <stdlib.h>
+#  include <stdarg.h>
+#  include <krb5/com_err.h>
+# elif defined(HAVE_COM_ERR_H)
+#  include <com_err.h>
+# else
+#  error "no local com_err.h"
+# endif
 #endif /* IN_COM_ERR */
 
 /* This allows us to work even when we don't have an fdatasync */
@@ -1556,7 +1591,7 @@ typedef unsigned int socklen_t;
 typedef int rlim_t;
 #endif
 
-/* some potentially memory saving tradeoffs, 
+/* some potentially memory saving tradeoffs,
    preconfigured in memory-saving mode */
 
 /* save the cmdlines for the ID command */
@@ -1647,7 +1682,7 @@ extern void *memmem(const void *, size_t, const void *, size_t);
 /* compile time options; think carefully before modifying */
 enum {
     /* should we send an UNAVAILABLE message to master when
-     * a service is exiting (master is already going to be 
+     * a service is exiting (master is already going to be
      * informed of the exit by the SIGCHLD signal anyway) ? */
     MESSAGE_MASTER_ON_EXIT = 0,
 
@@ -1657,7 +1692,7 @@ enum {
     /* should we call fsync() to maybe help with softupdates? (it should) */
     APPEND_ULTRA_PARANOID = 1,
 
-    /* should we log extra information at the DEBUG level for DB stuff? 
+    /* should we log extra information at the DEBUG level for DB stuff?
      * 0 -> nothing; 1 -> some; higher -> even more */
     CONFIG_DB_VERBOSE = 1,
 
@@ -1713,6 +1748,8 @@ External dependencies:
    ldap:               $have_ldap
    openssl:            $with_ssl
    pcre:               $cyrus_cv_pcre_utf8
+   wrap:               $with_libwrap
+   cunit:              $enable_unit_tests
 
 Database support:
    bdb:                $use_berkeley
