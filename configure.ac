@@ -69,6 +69,26 @@ netbsd*)
 esac
 AC_MSG_RESULT([$target_os "$CFLAGS" "$LDFLAGS"])
 
+case $build_os in
+netbsd*)
+	AC_PATH_PROG(PERL,[perl],[false],[/usr/bin])
+	AS_IF([ ! $PERL ],[
+		AC_MSG_ERROR([
+
+As root, please
+
+    pkgin install perl
+
+and
+
+    ln -s /usr/pkg/bin/perl /usr/bin/perl
+
+so that scripts that hardcoded #!/usr/bin/perl work.
+		])
+	])
+	;;
+esac
+
 AM_INIT_AUTOMAKE([-Wall -Werror -Wno-portability foreign dist-bzip2 no-installinfo subdir-objects])
 AC_CONFIG_LIBOBJ_DIR([lib])
 dnl Useful hook for distributions
