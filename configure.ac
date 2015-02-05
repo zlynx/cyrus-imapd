@@ -86,6 +86,21 @@ and
 so that scripts that hardcoded #!/usr/bin/perl work.
 		])
 	])
+	AC_PATH_PROG(BASH,[bash],[false],[/bin])
+	AS_IF([ ! $BASH ],[
+		AC_MSG_ERROR([
+
+As root, please
+
+    pkgin install bash
+
+and
+
+    ln -s /usr/pkg/bin/bash /bin/bash
+
+so that scripts that hardcoded #!/bin/bash work.
+		])
+	])
 	;;
 esac
 
