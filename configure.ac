@@ -274,25 +274,25 @@ case "$with_bdb" in
 esac
 
 if test "$use_berkeley" != "no"; then
-  CYRUS_BERKELEY_DB_CHK()
+	SNERT_BERKELEY_DB
+	AS_IF([ test $bdb_version = '1.85' ],[
+		AC_MSG_ERROR([
+Require Berkeley DB 3.x or better.  If you have the necessary
+packages installed and/or supply the --with-bdb-libdir and
+--with-bdb-incdir configure options.
+		])
+	])
 
-  if test "$dblib" = "no"; then
-    AC_MSG_ERROR([Berkeley DB 3.x or later was not found.  You may need to
-    supply the --with-bdb-libdir or --with-bdb-incdir configure options.])
-  fi
+	BDB_INC=${CFLAGS_DB}
+	BDB_LIB=${HAVE_LIB_DB}
+	CMU_ADD_LIBPATH($BDB_L_DIR)
 
-  if test "$with_bdb_lib" != "none"; then
-    CMU_ADD_LIBPATH($with_bdb_lib)
-  fi
+	AC_SUBST(BDB_INC)HAVE_LIB_DB
+	AC_SUBST(BDB_LIB)
 
-  BDB_INC=${BDB_INCADD}
-  BDB_LIB=${BDB_LIBADD}
-  AC_SUBST(BDB_INC)
-  AC_SUBST(BDB_LIB)
-
-  LIBS="${LIBS} ${BDB_LIBADD}"
-  CPPFLAGS="${BDB_INCADD} ${CPPFLAGS}"
-  AC_DEFINE(HAVE_BDB,[],[Build in Berkeley DB support?])
+	LIBS="${LIBS} ${BDB_LIB}"
+	CPPFLAGS="${BDB_INC} ${CPPFLAGS}"
+	AC_DEFINE(HAVE_BDB,[],[Build in Berkeley DB support?])
 fi
 AM_CONDITIONAL([USE_BERKELEY], [test "$use_berkeley" != "no"])
 

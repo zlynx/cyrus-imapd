@@ -1,257 +1,3 @@
-AC_DEFUN([CMU_DB_INC_WHERE1], [
-saved_CPPFLAGS=$CPPFLAGS
-CPPFLAGS="$saved_CPPFLAGS -I$1"
-AC_TRY_COMPILE([#include <db.h>],
-[DB *db;
-db_create(&db, NULL, 0);
-db->open(db, "foo.db", NULL, DB_UNKNOWN, DB_RDONLY, 0644);],
-ac_cv_found_db_inc=yes,
-ac_cv_found_db_inc=no)
-CPPFLAGS=$saved_CPPFLAGS
-])
-
-AC_DEFUN([CMU_DB_INC_WHERE], [
-   for i in $1; do
-      AC_MSG_CHECKING(for db headers in $i)
-      CMU_DB_INC_WHERE1($i)
-      CMU_TEST_INCPATH($i, db)
-      if test "$ac_cv_found_db_inc" = "yes"; then
-        ac_cv_db_where_inc=$i
-        AC_MSG_RESULT(found)
-        break
-      else
-        AC_MSG_RESULT(not found)
-      fi
-    done
-])
-
-#
-# Test for lib files
-#
-
-AC_DEFUN([CMU_DB3_LIB_WHERE1], [
-AC_REQUIRE([CMU_AFS])
-AC_REQUIRE([CMU_KRB4])
-saved_LIBS=$LIBS
-  LIBS="$saved_LIBS -L$1 -ldb-3"
-AC_TRY_LINK([#include <db.h>],
-[db_env_create(NULL, 0);],
-[ac_cv_found_db_3_lib=yes],
-ac_cv_found_db_3_lib=no)
-LIBS=$saved_LIBS
-])
-AC_DEFUN([CMU_DB4_LIB_WHERE1], [
-AC_REQUIRE([CMU_AFS])
-AC_REQUIRE([CMU_KRB4])
-saved_LIBS=$LIBS
-LIBS="$saved_LIBS -L$1 -ldb-4"
-AC_TRY_LINK([#include <db.h>],
-[db_env_create(NULL, 0);],
-[ac_cv_found_db_4_lib=yes],
-ac_cv_found_db_4_lib=no)
-LIBS=$saved_LIBS
-])
-
-AC_DEFUN([CMU_DB_LIB_WHERE], [
-   for i in $1; do
-      AC_MSG_CHECKING(for db libraries in $i)
-if test "$enable_db4" = "yes"; then
-      CMU_DB4_LIB_WHERE1($i)
-      CMU_TEST_LIBPATH($i, [db-4])
-      ac_cv_found_db_lib=$ac_cv_found_db_4_lib
-else
-      CMU_DB3_LIB_WHERE1($i)
-      CMU_TEST_LIBPATH($i, [db-3])
-      ac_cv_found_db_lib=$ac_cv_found_db_3_lib
-fi
-      if test "$ac_cv_found_db_lib" = "yes" ; then
-        ac_cv_db_where_lib=$i
-        AC_MSG_RESULT(found)
-        break
-      else
-        AC_MSG_RESULT(not found)
-      fi
-    done
-])
-
-AC_DEFUN([CMU_USE_DB], [
-AC_REQUIRE([CMU_FIND_LIB_SUBDIR])
-AC_ARG_WITH(db,
-	[  --with-db=PREFIX      Compile with db support],
-	[if test "X$with_db" = "X"; then
-		with_db=yes
-	fi])
-AC_ARG_WITH(db-lib,
-	[  --with-db-lib=dir     use db libraries in dir],
-	[if test "$withval" = "yes" -o "$withval" = "no"; then
-		AC_MSG_ERROR([No argument for --with-db-lib])
-	fi])
-AC_ARG_WITH(db-include,
-	[  --with-db-include=dir use db headers in dir],
-	[if test "$withval" = "yes" -o "$withval" = "no"; then
-		AC_MSG_ERROR([No argument for --with-db-include])
-	fi])
-AC_ARG_ENABLE(db4,
-	[  --enable-db4          use db 4.x libraries])
-	
-	if test "X$with_db" != "X"; then
-	  if test "$with_db" != "yes"; then
-	    ac_cv_db_where_lib=$with_db/$CMU_LIB_SUBDIR
-	    ac_cv_db_where_inc=$with_db/include
-	  fi
-	fi
-
-	if test "X$with_db_lib" != "X"; then
-	  ac_cv_db_where_lib=$with_db_lib
-	fi
-	if test "X$ac_cv_db_where_lib" = "X"; then
-	  CMU_DB_LIB_WHERE(/usr/athena/$CMU_LIB_SUBDIR /usr/$CMU_LIB_SUBDIR /usr/local/$CMU_LIB_SUBDIR)
-	fi
-
-	if test "X$with_db_include" != "X"; then
-	  ac_cv_db_where_inc=$with_db_include
-	fi
-	if test "X$ac_cv_db_where_inc" = "X"; then
-	  CMU_DB_INC_WHERE(/usr/athena/include /usr/local/include)
-	fi
-
-	AC_MSG_CHECKING(whether to include db)
-	if test "X$ac_cv_db_where_lib" = "X" -o "X$ac_cv_db_where_inc" = "X"; then
-	  ac_cv_found_db=no
-	  AC_MSG_RESULT(no)
-	else
-	  ac_cv_found_db=yes
-	  AC_MSG_RESULT(yes)
-	  DB_INC_DIR=$ac_cv_db_where_inc
-	  DB_LIB_DIR=$ac_cv_db_where_lib
-	  DB_INC_FLAGS="-I${DB_INC_DIR}"
-          if test "$enable_db4" = "yes"; then
-	     DB_LIB_FLAGS="-L${DB_LIB_DIR} -ldb-4"
-          else
-	     DB_LIB_FLAGS="-L${DB_LIB_DIR} -ldb-3"
-          fi
-          dnl Do not force configure.in to put these in CFLAGS and LIBS unconditionally
-          dnl Allow makefile substitutions....
-          AC_SUBST(DB_INC_FLAGS)
-          AC_SUBST(DB_LIB_FLAGS)
-	  if test "X$RPATH" = "X"; then
-		RPATH=""
-	  fi
-	  case "${host}" in
-	    *-*-linux*)
-	      if test "X$RPATH" = "X"; then
-	        RPATH="-Wl,-rpath,${DB_LIB_DIR}"
-	      else 
-		RPATH="${RPATH}:${DB_LIB_DIR}"
-	      fi
-	      ;;
-	    *-*-hpux*)
-	      if test "X$RPATH" = "X"; then
-	        RPATH="-Wl,+b${DB_LIB_DIR}"
-	      else 
-		RPATH="${RPATH}:${DB_LIB_DIR}"
-	      fi
-	      ;;
-	    *-*-irix*)
-	      if test "X$RPATH" = "X"; then
-	        RPATH="-Wl,-rpath,${DB_LIB_DIR}"
-	      else 
-		RPATH="${RPATH}:${DB_LIB_DIR}"
-	      fi
-	      ;;
-	    *-*-solaris2*)
-	      if test "$ac_cv_prog_gcc" = yes; then
-		if test "X$RPATH" = "X"; then
-		  RPATH="-Wl,-R${DB_LIB_DIR}"
-		else 
-		  RPATH="${RPATH}:${DB_LIB_DIR}"
-		fi
-	      else
-	        RPATH="${RPATH} -R${DB_LIB_DIR}"
-	      fi
-	      ;;
-	  esac
-	  AC_SUBST(RPATH)
-	fi
-	])
-
-
-
-dnl ---- CUT HERE ---
-
-dnl These are the Cyrus Berkeley DB macros.  In an ideal world these would be
-dnl identical to the above.
-
-dnl They are here so that they can be shared between Cyrus IMAPd
-dnl and Cyrus SASL with relative ease.
-
-dnl The big difference between this and the ones above is that we don't assume
-dnl that we know the name of the library, and we try a lot of permutations
-dnl instead.  We also assume that DB4 is acceptable.
-
-dnl When we're done, there will be a BDB_LIBADD and a BDB_INCADD which should
-dnl be used when necessary.  We should probably be smarter about our RPATH
-dnl handling.
-
-dnl Call these with BERKELEY_DB_CHK.
-
-dnl We will also set $dblib to "berkeley" if we are successful, "no" otherwise.
-
-dnl this is unbelievably painful due to confusion over what db-3 should be
-dnl named and where the db-3 header file is located.  arg.
-AC_DEFUN([CYRUS_BERKELEY_DB_CHK_LIB],
-[
-	BDB_SAVE_LDFLAGS=$LDFLAGS
-
-	if test -d $with_bdb_lib; then
-	    CMU_ADD_LIBPATH_TO($with_bdb_lib, LDFLAGS)
-	    CMU_ADD_LIBPATH_TO($with_bdb_lib, BDB_LIBADD)
-	else
-	    BDB_LIBADD=""
-	fi
-
-	saved_LIBS=$LIBS
-	    for dbname in ${with_bdb} \
-	        db-5.3 db5.3 db53 \
-	        db-5.2 db5.2 db52 \
-	        db-5.1 db5.2 db51 \
-	        db-5.0 db5.2 db50 db-5 db5 \
-	        db-4.8 db4.8 db48 \
-	        db-4.7 db4.7 db47 \
-	        db-4.6 db4.6 db46 \
-	        db-4.5 db4.5 db45 \
-	        db-4.4 db4.4 db44 \
-	        db-4.3 db4.3 db43 \
-	        db-4.2 db4.2 db42 \
-	        db-4.1 db4.1 db41 \
-	        db-4.0 db4.0 db40 db-4 db4 \
-	        db-3.3 db3.3 db33 \
-	        db-3.2 db3.2 db32 \
-	        db-3.1 db3.1 db31 \
-	        db-3.0 db3.0 db30 db-3 db3 \
-	        db
-	      do
-	    LIBS="$saved_LIBS -l$dbname"
-	    AC_TRY_LINK([#include <stdio.h>
-#include <db.h>],
-	    [db_create(NULL, NULL, 0);],
-	    BDB_LIBADD="$BDB_LIBADD -l$dbname"; dblib="berkeley"; dbname=db,
-            dblib="no")
-	    if test "$dblib" = "berkeley"; then break; fi
-          done
-        if test "$dblib" = "no"; then
-	    LIBS="$saved_LIBS -ldb"
-	    AC_TRY_LINK([#include <stdio.h>
-#include <db.h>],
-	    [db_create(NULL, NULL, 0);],
-	    BDB_LIBADD="$BDB_LIBADD -ldb"; dblib="berkeley"; dbname=db,
-            dblib="no")
-        fi
-	LIBS=$saved_LIBS
-
-	LDFLAGS=$BDB_SAVE_LDFLAGS
-])
-
 AC_DEFUN([CYRUS_BERKELEY_DB_OPTS],
 [
 AC_ARG_WITH(bdb-libdir,
@@ -264,24 +10,168 @@ AC_ARG_WITH(bdb-incdir,
 	[ test "${with_bdb_inc+set}" = set || with_bdb_inc=none ])
 ])
 
-AC_DEFUN([CYRUS_BERKELEY_DB_CHK],
-[
+AC_DEFUN([SNERT_BERKELEY_DB],[
+AS_IF([test ${with_bdb:-yes} != 'no'],[
 	AC_REQUIRE([CYRUS_BERKELEY_DB_OPTS])
+	echo "Check for Berkeley DB support..."
 
-	cmu_save_CPPFLAGS=$CPPFLAGS
+	bdb_save_LIBS=$LIBS
+	bdb_save_CFLAGS=$CFLAGS
+	bdb_save_LDFLAGS=$LDFLAGS
 
-	if test -d $with_bdb_inc; then
-	    CPPFLAGS="$CPPFLAGS -I$with_bdb_inc"
-	    BDB_INCADD="-I$with_bdb_inc"
+	dnl Short list of system directories to try.
+	if test -d "$with_bdb_inc" ; then
+		BDB_DIRS="$with_bdb_inc"
+	elif test -d "$with_bdb/include" ; then
+		BDB_DIRS="$with_bdb/include"
 	else
-	    BDB_INCADD=""
+		BDB_DIRS="/opt /usr/pkg/include /usr/local/include /usr/include"
 	fi
 
-	dnl Note that FreeBSD puts it in a wierd place
-        dnl (but they should use with-bdb-incdir)
-        AC_CHECK_HEADER(db.h,
-                        [CYRUS_BERKELEY_DB_CHK_LIB()],
-                        dblib="no")
+	dnl Find all instances of db.h
+	AC_LANG_PUSH(C)
+	bdb_best_major=-1
+	bdb_best_minor=-1
+	for h in `find $BDB_DIRS -name db.h 2>/dev/null`; do
+		AC_MSG_CHECKING($h)
+		I_DIR=`dirname $h`
 
-	CPPFLAGS=$cmu_save_CPPFLAGS
+		dnl Version subdirectory.
+		v=`basename $I_DIR`
+		if test $v = 'include' ; then
+			d=$I_DIR
+			v=''
+		else
+			d=`dirname $I_DIR`
+		fi
+		d=`dirname $d`
+
+		dnl Determine matching lib directory.
+		if test -d "$with_bdb_lib" ; then
+			L_DIR="$with_bdb_lib"
+		elif test -d $d/lib64/$v ; then
+			L_DIR="$d/lib64/$v"
+		elif test -d $d/lib/$v ; then
+			L_DIR="$d/lib/$v"
+		elif test -d $d/lib64 ; then
+			L_DIR="$d/lib64"
+		else
+			L_DIR="$d/lib"
+		fi
+
+		dnl Don't need to add system locations to options.
+		if test ${I_DIR} != '/usr/include' ; then
+			CFLAGS="-I$I_DIR $CFLAGS"
+		fi
+		if test ${L_DIR} != '/usr/lib64' -a ${L_DIR} != '/usr/lib' ; then
+			LDFLAGS="-L$L_DIR $LDFLAGS"
+		fi
+
+		dnl Extract the version number.
+		bdb_major=`grep DB_VERSION_MAJOR $h | cut -f 3`
+		if test -n "$bdb_major" ; then
+			bdb_minor=`grep DB_VERSION_MINOR $h | cut -f 3`
+			bdb_create='db_create'
+		else
+			dnl Assume oldest version commonly found used by BSD variants.
+			bdb_major=1
+			bdb_minor=85
+			bdb_create='dbopen'
+			check_libc='c'
+		fi
+
+		AC_MSG_RESULT(${bdb_major}.${bdb_minor})
+
+		dnl Library search based on include version directory.
+		for l in $v db $check_libc ; do
+			if test "$l" != 'c'; then
+				LIBS="-l$l $LIBS"
+			fi
+			bdb_name=$l
+
+			AC_MSG_CHECKING([for $bdb_create in lib$bdb_name])
+			AC_LINK_IFELSE([
+				AC_LANG_SOURCE([[
+#include <stdlib.h>
+#ifdef HAVE_SYS_TYPES_H
+# include <sys/types.h>
+#endif
+#include <db.h>
+
+int
+main(int argc, char **argv)
+{
+#ifdef DB_VERSION_MAJOR
+	DB *db = NULL;
+	return db_create(&db, NULL, 0) != 0 || db == NULL;
+#else
+	DB *db = dbopen("access.db", 0, 0, 0, NULL);
+	return 0;
+#endif
+}
+				]])
+			],[
+				found=yes
+				AC_MSG_RESULT(yes)
+				AC_DEFINE_UNQUOTED(HAVE_DB_H)
+				if test $bdb_major = 1 ; then
+					AC_DEFINE_UNQUOTED(HAVE_DBOPEN, 1)
+				else
+					AC_DEFINE_UNQUOTED(HAVE_DB_CREATE, 1)
+				fi
+
+				dnl Assume newest is best.
+				if test $bdb_major -gt $bdb_best_major \
+				-o \( $bdb_major -eq $bdb_best_major -a $bdb_minor -gt $bdb_best_minor \); then
+					bdb_best_major=$bdb_major
+					bdb_best_minor=$bdb_minor
+					if test -n "$l" ; then
+						BDB_I_DIR=$I_DIR
+						BDB_L_DIR=$L_DIR
+
+						AC_SUBST(HAVE_LIB_DB, "-l$l")
+						AC_SUBST(CFLAGS_DB, "-I$BDB_I_DIR")
+						AC_SUBST(LDFLAGS_DB, "-L$BDB_L_DIR")
+
+						AC_DEFINE_UNQUOTED(HAVE_LIB_DB, "-l$l")
+						AC_DEFINE_UNQUOTED(LDFLAGS_DB, "-I$BDB_I_DIR")
+						AC_DEFINE_UNQUOTED(CFLAGS_DB, "-L$BDB_L_DIR")
+					fi
+				fi
+			],[
+				AC_MSG_RESULT(no)
+			])
+			LIBS="$bdb_save_LIBS"
+		done
+
+		LDFLAGS="$bdb_save_LDFLAGS"
+		CFLAGS="$bdb_save_CFLAGS"
+	done
+	if test $bdb_best_major -gt -1; then
+		bdb_version="$bdb_best_major.$bdb_best_minor"
+		AC_DEFINE_UNQUOTED(HAVE_DB_MAJOR, $bdb_best_major)
+		AC_DEFINE_UNQUOTED(HAVE_DB_MINOR, $bdb_best_minor)
+		AC_MSG_RESULT([checking best Berkeley DB version... $bdb_version])
+	else
+		AC_MSG_RESULT([checking best Berkeley DB version... not found])
+	fi
+	AC_LANG_POP(C)
+
+	AH_VERBATIM([HAVE_DB_MAJOR],[
+/*
+ * Berkeley DB
+ */
+#undef HAVE_DB_MAJOR
+#undef HAVE_DB_MINOR
+#undef HAVE_DB_CREATE
+#undef HAVE_DBOPEN
+#undef HAVE_DB_H
+#undef HAVE_LIB_DB
+#undef LDFLAGS_DB
+#undef CFLAGS_DB
+	])
+
+	LDFLAGS="$bdb_save_LDFLAGS"
+	CFLAGS="$bdb_save_CFLAGS"
+])
 ])
