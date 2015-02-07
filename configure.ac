@@ -287,7 +287,7 @@ packages installed and/or supply the --with-bdb-libdir and
 	BDB_LIB=${HAVE_LIB_DB}
 	CMU_ADD_LIBPATH($BDB_L_DIR)
 
-	AC_SUBST(BDB_INC)HAVE_LIB_DB
+	AC_SUBST(BDB_INC)
 	AC_SUBST(BDB_LIB)
 
 	LIBS="${LIBS} ${BDB_LIB}"
@@ -341,7 +341,7 @@ esac
 
 if test "$with_mysql" != "no"; then
     MYSQL_LIBADD=`$mysql_config --libs`
-    MYSQL_INCADD=`$mysql_config --cflags`
+    MYSQL_INCADD=`$mysql_config --include`
     HAVE_SQL=1
     LIBS="${LIBS} ${MYSQL_LIBADD}"
     CPPFLAGS="${MYSQL_INCADD} ${CPPFLAGS}"

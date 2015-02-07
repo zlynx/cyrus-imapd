@@ -111,7 +111,6 @@ main(int argc, char **argv)
 }
 				]])
 			],[
-				found=yes
 				AC_MSG_RESULT(yes)
 				AC_DEFINE_UNQUOTED(HAVE_DB_H)
 				if test $bdb_major = 1 ; then
@@ -134,8 +133,8 @@ main(int argc, char **argv)
 						AC_SUBST(LDFLAGS_DB, "-L$BDB_L_DIR")
 
 						AC_DEFINE_UNQUOTED(HAVE_LIB_DB, "-l$l")
-						AC_DEFINE_UNQUOTED(LDFLAGS_DB, "-I$BDB_I_DIR")
-						AC_DEFINE_UNQUOTED(CFLAGS_DB, "-L$BDB_L_DIR")
+						AC_DEFINE_UNQUOTED(CFLAGS_DB, "-I$BDB_I_DIR")
+						AC_DEFINE_UNQUOTED(LDFLAGS_DB, "-L$BDB_L_DIR")
 					fi
 				fi
 			],[
@@ -147,6 +146,7 @@ main(int argc, char **argv)
 		LDFLAGS="$bdb_save_LDFLAGS"
 		CFLAGS="$bdb_save_CFLAGS"
 	done
+	AC_LANG_POP(C)
 	if test $bdb_best_major -gt -1; then
 		bdb_version="$bdb_best_major.$bdb_best_minor"
 		AC_DEFINE_UNQUOTED(HAVE_DB_MAJOR, $bdb_best_major)
@@ -155,7 +155,6 @@ main(int argc, char **argv)
 	else
 		AC_MSG_RESULT([checking best Berkeley DB version... not found])
 	fi
-	AC_LANG_POP(C)
 
 	AH_VERBATIM([HAVE_DB_MAJOR],[
 /*
@@ -173,5 +172,6 @@ main(int argc, char **argv)
 
 	LDFLAGS="$bdb_save_LDFLAGS"
 	CFLAGS="$bdb_save_CFLAGS"
+	LIBS="$bdb_save_LIBS"
 ])
 ])
