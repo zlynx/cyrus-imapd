@@ -1405,8 +1405,25 @@ AC_ARG_ENABLE(netscapehack,
 		AC_DEFINE(ENABLE_X_NETSCAPE_HACK,[],[Enable Netscape Menu Option Hack?])
 	fi)
 
+SNERT_SASL2
 CMU_SASL2_REQUIRE_VER(2,1,7)
 CMU_SASL2_CHECKAPOP_REQUIRED
+
+dnl Map SNERT_SASL2 values to CMU_SASL2
+AS_IF([test X"$SASLFLAGS" = X],[
+	SASLFLAGS="$CFLAGS_SASL2"
+])
+AS_IF([test X"$LIB_SASL" = X],[
+	LIB_SASL="LDFLAGS_SASL2"
+])
+AS_IF([test "$HAV_LIB_SASL2" = '-lsasl2'],[
+	AS_IF([test X"$DYNSASLFLAGS" = X],[
+		DYNSASLFLAGS="$CFLAGS_SASL2"
+	])
+	AS_IF([test X"$LIB_DYN_SASL" = X],[
+		LIB_DYN_SASL="LDFLAGS_SASL2"
+	])
+])
 
 AC_ARG_WITH(perl,
 	[AS_HELP_STRING([--with-perl=PERL], [use PERL for perl])],
