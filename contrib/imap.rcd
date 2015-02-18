@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# Cyrus IMAP
+#
+
+# PROVIDE: imap
+# REQUIRE: mail saslauthd
+# KEYWORD: shutdown
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="imap"
+rcvar=$name
+command="/usr/local/cyrus/bin/master"
+command_args="-d"
+sig_stop="QUIT"
+required_files="/etc/imapd.conf /etc/cyrus.conf"
+pidfile="/var/run/cyrus-master.pid"
+
+load_rc_config $name
+run_rc_command "$1"
