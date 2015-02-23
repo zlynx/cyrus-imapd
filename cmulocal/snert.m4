@@ -172,4 +172,30 @@ AC_DEFUN([SNERT_SASL2],[
 	])
 ])
 
+dnl
+dnl SNERT_SYS
+dnl
+AC_DEFUN([SNERT_SYS],[
+	echo
+	echo "Check for system kernel support..."
+	echo
+	dnl Linux
+	AC_CHECK_HEADERS([sys/prctl.h],[
+		AC_CHECK_FUNCS(prctl)
+	])
+	AC_CHECK_HEADERS([sys/sysinfo.h],[
+		AC_CHECK_FUNCS(get_nprocs_conf get_nprocs)
+	])
+	dnl *BSD
+	AC_CHECK_HEADERS([sys/param.h sys/sysctl.h],[
+		AC_CHECK_FUNCS(sysctl)
+	])
+	AC_CHECK_HEADERS([stdlib.h],[
+		AC_CHECK_FUNCS(getloadavg)
+	])
+	dnl POSIX / generic
+	AC_CHECK_HEADERS([unistd.h],[
+		AC_CHECK_FUNCS([fpathconf pathconf sysconf])
+	])
+])
 
