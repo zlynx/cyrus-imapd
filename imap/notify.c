@@ -71,7 +71,7 @@ static int add_arg(char *buf, int max_size, const char *arg, int *buflen)
 
     if (*buflen + len > max_size) return -1;
 
-    strcat(buf+*buflen, myarg);
+    (void) strcat(buf+*buflen, myarg);
     *buflen += len;
 
     return 0;
@@ -99,7 +99,7 @@ EXPORTED void notify(const char *method,
     memset((char *)&sun_data, 0, sizeof(sun_data));
     sun_data.sun_family = AF_UNIX;
     notify_sock = config_getstring(IMAPOPT_NOTIFYSOCKET);
-    if (notify_sock) {	
+    if (notify_sock) {
 	strlcpy(sun_data.sun_path, notify_sock, sizeof(sun_data.sun_path));
     }
     else {

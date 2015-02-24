@@ -137,7 +137,7 @@ EXPORTED unsigned int seq_lastnum(const char *list, const char **numstart)
 
     /* find the end of the string */
     tail = list + strlen(list);
-    
+
     /* work back until first non-digit */
     while (tail > list && cyrus_isdigit(tail[-1]))
 	tail--;
@@ -180,7 +180,7 @@ static void seqset_simplify(struct seqset *set)
     unsigned i;
 
     /* nothing to simplify */
-    if (!set->len) 
+    if (!set->len)
 	return;
 
     /* Sort the ranges using our special comparator */
@@ -247,7 +247,7 @@ EXPORTED struct seqset *seqset_parse(const char *sequence,
 	    if (read_num(&sequence, maxval, &end))
 		fatal("invalid sequence", EC_SOFTWARE);
 	}
-	else 
+	else
 	    end = start;
 	if (start > end) {
 	    unsigned i = end;
@@ -442,15 +442,15 @@ EXPORTED char *seqset_cstring(const struct seqset *seq)
 
 	/* single value only */
 	if (seq->set[i].low == seq->set[i].high)
-	    sprintf(base+offset, "%u", seq->set[i].low);
+	    SNPRINTF_LOG(base+offset, alloc-offset, "%u", seq->set[i].low);
 
 	/* special case - end of the list */
 	else if (seq->set[i].high == UINT_MAX)
-	    sprintf(base+offset, "%u:*", seq->set[i].low);
+	    SNPRINTF_LOG(base+offset, alloc-offset, "%u:*", seq->set[i].low);
 
 	/* value range */
 	else
-	    sprintf(base+offset, "%u:%u", seq->set[i].low,
+	    SNPRINTF_LOG(base+offset, alloc-offset, "%u:%u", seq->set[i].low,
 					  seq->set[i].high);
 
 	/* find the end */

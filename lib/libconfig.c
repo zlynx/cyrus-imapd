@@ -98,7 +98,7 @@ EXPORTED const char *config_getstring(enum imapopt opt)
     assert(opt > IMAPOPT_ZERO && opt < IMAPOPT_LAST);
     assert((imapopts[opt].t == OPT_STRING) ||
 	   (imapopts[opt].t == OPT_STRINGLIST));
-    
+
     return imapopts[opt].val.s;
 }
 
@@ -112,7 +112,7 @@ EXPORTED int config_getint(enum imapopt opt)
 	syslog(LOG_ERR, "config_getint: %s: %ld too large for type",
 	       imapopts[opt].optname, imapopts[opt].val.i);
     }
-#endif    
+#endif
     return imapopts[opt].val.i;
 }
 
@@ -123,10 +123,10 @@ EXPORTED int config_getswitch(enum imapopt opt)
 #if (SIZEOF_LONG != 4)
     if ((imapopts[opt].val.b > 0x7fffffff)||
 	(imapopts[opt].val.b < -0x7fffffff)) {
-	syslog(LOG_ERR, "config_getswitch: %s: %ld too large for type", 
+	syslog(LOG_ERR, "config_getswitch: %s: %ld too large for type",
 	       imapopts[opt].optname, imapopts[opt].val.b);
     }
-#endif    
+#endif
     return imapopts[opt].val.b;
 }
 
@@ -134,7 +134,7 @@ EXPORTED enum enum_value config_getenum(enum imapopt opt)
 {
     assert(opt > IMAPOPT_ZERO && opt < IMAPOPT_LAST);
     assert(imapopts[opt].t == OPT_ENUM);
-    
+
     return imapopts[opt].val.e;
 }
 
@@ -142,7 +142,7 @@ EXPORTED unsigned long config_getbitfield(enum imapopt opt)
 {
     assert(opt > IMAPOPT_ZERO && opt < IMAPOPT_LAST);
     assert(imapopts[opt].t == OPT_BITFIELD);
-    
+
     return imapopts[opt].val.x;
 }
 
@@ -163,7 +163,7 @@ EXPORTED const char *config_getoverflowstring(const char *key, const char *def)
 	lcase(buf);
 	ret = hash_lookup(buf, &confighash);
     }
-    
+
     /* No service-specific override, check the actual key */
     if (!ret)
 	ret = hash_lookup(key, &confighash);
@@ -455,12 +455,12 @@ EXPORTED void config_read(const char *alt_config, const int config_need_data)
 	 * 17 is the length of "{configdirectory}",
 	 * 16 is one less than that length, so that the replacement string
 	 *    that is malloced has room for the '\0' */
-	if (!strncasecmp(imapopts[opt].val.s,"{configdirectory}",17)) {
+	if (!strncasecmp(imapopts[opt].val.s,"{configdirectory}",STRLEN("{configdirectory}"))) {
 	    const char *str = imapopts[opt].val.s;
-	    char *newstring =
-		xmalloc(strlen(config_dir) + strlen(str) - 16);
+	    size_t size = strlen(config_dir) + strlen(str) - STRLEN("{configdirectory}")-1;
+	    char *newstring = xmalloc(size);
 	    char *freeme = NULL;
-	    
+
 	    /* we need to replace this string, will we need to free
 	     * the current value?  -- only if we've actually seen it in
 	     * the config file. */
@@ -468,8 +468,8 @@ EXPORTED void config_read(const char *alt_config, const int config_need_data)
 		freeme = (char *)str;
 
 	    /* Build replacement string from configdirectory option */
-	    strcpy(newstring, config_dir);
-	    strcat(newstring, str + 17);
+	    (void) strlcpy(newstring, config_dir, size);
+	    STRLCAT_LOG(newstring, str + STRLEN("{configdirectory}"), size);
 
 	    imapopts[opt].val.s = newstring;
 
@@ -609,7 +609,7 @@ static void config_read_file(const char *filename)
     else {
 	hash_insert(filename, (void*) 0xDEADBEEF, &includehash);
     }
-    
+
     len = 0;
     while (fgets(buf+len, bufsize-len, infile)) {
 	if (buf[len]) {
@@ -656,22 +656,22 @@ static void config_read_file(const char *filename)
 	    fatal(errbuf, EC_CONFIG);
 	}
 	*p++ = '\0';
-	
+
 	/* remove leading whitespace */
 	while (*p && Uisspace(*p)) p++;
-	
+
 	/* remove trailing whitespace */
 	for (q = p + strlen(p) - 1; q > p && Uisspace(*q); q--) {
 	    *q = '\0';
 	}
-	
+
 	if (!*p) {
 	    snprintf(errbuf, sizeof(errbuf),
 		    "empty option value on line %d of configuration file",
 		    lineno);
 	    fatal(errbuf, EC_CONFIG);
 	}
-	
+
 	srvkey = NULL;
 
 	/* Look for directives */
@@ -689,12 +689,12 @@ static void config_read_file(const char *filename)
 	}
 
 	/* Find if there is a <service>_ prefix */
-	if (config_ident && !strncasecmp(key, config_ident, idlen) 
+	if (config_ident && !strncasecmp(key, config_ident, idlen)
 	   && key[idlen] == '_') {
 	    /* skip service_ prefix */
 	    srvkey = key + idlen + 1;
 	}
-	
+
 	/* look for a service_ prefix match in imapopts */
 	if (srvkey) {
 	    for (opt = IMAPOPT_ZERO; opt < IMAPOPT_LAST; opt++) {
@@ -705,7 +705,7 @@ static void config_read_file(const char *filename)
 		}
 	    }
 	}
-	
+
 	/* Did not find a service_ specific match, try looking for an
 	 * exact match */
 	if (!service_specific) {
@@ -718,7 +718,7 @@ static void config_read_file(const char *filename)
 
 	/* If both of those loops failed, it goes verbatim into the
 	 * overflow hash table. */
-	
+
 	if (opt < IMAPOPT_LAST) {
 	    /* Okay, we know about this configure option.
 	     * So first check that we have either
@@ -733,7 +733,7 @@ static void config_read_file(const char *filename)
 		    (imapopts[opt].seen == 2 && service_specific)
 		) {
 
-		sprintf(errbuf,
+		SNPRINTF_LOG(errbuf, sizeof (errbuf),
 			"option '%s' was specified twice in config file (second occurance on line %d)",
 			fullkey, lineno);
 		fatal(errbuf, EC_CONFIG);
@@ -751,11 +751,11 @@ static void config_read_file(const char *filename)
 		imapopts[opt].seen = 2;
 	    else
 		imapopts[opt].seen = 1;
-	    
+
 	    /* this is a known option */
 	    switch (imapopts[opt].t) {
-	    case OPT_STRING: 
-	    {		    
+	    case OPT_STRING:
+	    {
 		imapopts[opt].val.s = xstrdup(p);
 
 		if (opt == IMAPOPT_CONFIGDIRECTORY)
@@ -767,11 +767,11 @@ static void config_read_file(const char *filename)
 	    {
 		long val;
 		char *ptr;
-		
+
 		val = strtol(p, &ptr, 0);
 		if (!ptr || *ptr != '\0') {
 		    /* error during conversion */
-		    sprintf(errbuf, "non-integer value for %s in line %d",
+		    SNPRINTF_LOG(errbuf, sizeof (errbuf), "non-integer value for %s in line %d",
 			    imapopts[opt].optname, lineno);
 		    fatal(errbuf, EC_CONFIG);
 		}
@@ -791,7 +791,7 @@ static void config_read_file(const char *filename)
 		}
 		else {
 		    /* error during conversion */
-		    sprintf(errbuf, "non-switch value for %s in line %d",
+		    SNPRINTF_LOG(errbuf, sizeof (errbuf), "non-switch value for %s in line %d",
 			    imapopts[opt].optname, lineno);
 		    fatal(errbuf, EC_CONFIG);
 		}
@@ -834,7 +834,7 @@ static void config_read_file(const char *filename)
 
 		    if (!e->name) {
 			/* error during conversion */
-			sprintf(errbuf, "invalid value '%s' for %s in line %d",
+			SNPRINTF_LOG(errbuf, sizeof (errbuf), "invalid value '%s' for %s in line %d",
 				p, imapopts[opt].optname, lineno);
 			fatal(errbuf, EC_CONFIG);
 		    }
@@ -866,7 +866,7 @@ static void config_read_file(const char *filename)
 
 	    if (strncasecmp(key,"sasl_",5)
 	    && strncasecmp(key,"partition-",10)) {
-		sprintf(errbuf,
+		SNPRINTF_LOG(errbuf, sizeof (errbuf),
 			"option '%s' is unknown on line %d of config file",
 			fullkey, lineno);
 		fatal(errbuf, EC_CONFIG);
@@ -877,7 +877,7 @@ static void config_read_file(const char *filename)
 	    newval = xstrdup(p);
 	    val = hash_insert(key, newval, &confighash);
 	    if (val != newval) {
-		snprintf(errbuf, sizeof(errbuf), 
+		snprintf(errbuf, sizeof(errbuf),
 			"option '%s' was specified twice in config file (second occurance on line %d)",
 			fullkey, lineno);
 		fatal(errbuf, EC_CONFIG);

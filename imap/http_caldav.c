@@ -571,7 +571,7 @@ struct namespace_t namespace_calendar = {
 #endif
      ALLOW_DAV | ALLOW_WRITECOL | ALLOW_CAL ),
     &my_caldav_init, &my_caldav_auth, my_caldav_reset, &my_caldav_shutdown,
-    { 
+    {
 	{ &meth_acl,		&caldav_params },	/* ACL		*/
 	{ &meth_copy,		&caldav_params },	/* COPY		*/
 	{ &meth_delete,		&caldav_params },	/* DELETE	*/
@@ -1246,8 +1246,10 @@ static int dump_calendar(struct transaction_t *txn, int rights)
     }
 
     /* Check any preconditions */
-    sprintf(etag, "%u-%u-%u",
-	    mailbox->i.uidvalidity, mailbox->i.last_uid, mailbox->i.exists);
+    SNPRINTF_LOG(
+    	etag, sizeof (etag), "%u-%u-%u", mailbox->i.uidvalidity,
+    	mailbox->i.last_uid, mailbox->i.exists
+    );
     precond = caldav_check_precond(txn, NULL, etag, mailbox->index_mtime);
 
     switch (precond) {
@@ -1808,7 +1810,7 @@ static int list_actions(struct transaction_t *txn, int rights)
 	return HTTP_NO_PRIVS;
     }
 
-    sprintf(etag, "%ld", compile_time);
+    SNPRINTF_LOG(etag, sizeof (etag), "%ld", compile_time);
 
     /* Check any preconditions */
     precond = caldav_check_precond(txn, NULL, etag, lastmod);
@@ -1980,7 +1982,7 @@ static int action_freebusy(struct transaction_t *txn, int rights)
 	calfilter.start = icaltime_from_rfc3339_string(param->s);
 	if (icaltime_is_null_time(calfilter.start)) return HTTP_BAD_REQUEST;
 
-	/* Default to end of given day */	
+	/* Default to end of given day */
 	start = icaltime_as_timet_with_zone(calfilter.start, utc);
 	tm = localtime(&start);
 
@@ -2308,7 +2310,7 @@ static int meth_get(struct transaction_t *txn, void *params)
     mboxlist_entry_free(&mbentry);
 
     if (txn->req_tgt.collection) {
-	/* Download an entire calendar collection */ 
+	/* Download an entire calendar collection */
 	if (!action) return dump_calendar(txn, rights);
 
 	/* Delete a calendar collection */
@@ -2320,10 +2322,10 @@ static int meth_get(struct transaction_t *txn, void *params)
 
 	/* GET a list of calendars under calendar-home-set */
 	if (!strcmp(action->s, "list")) return action_list(txn, rights);
-	
+
 	/* Create a new calendar under calendar-home-set */
 	if (!strcmp(action->s, "create")) return action_create(txn, rights);
-	
+
 	/* GET busytime of the user */
 	if (!strcmp(action->s, "freebusy")) return action_freebusy(txn, rights);
     }
@@ -4242,7 +4244,7 @@ static int proppatch_tzid(xmlNodePtr prop, unsigned set,
 
     xml_add_prop(HTTP_FORBIDDEN, pctx->ns[NS_DAV],
 		 &propstat[PROPSTAT_FORBID], prop->name, prop->ns, NULL, 0);
-	    
+
     *pctx->ret = HTTP_FORBIDDEN;
 
     return 0;
@@ -4358,7 +4360,7 @@ static int report_cal_query(struct transaction_t *txn,
 	    /* Add responses for all contained calendar collections */
 	    strlcat(txn->req_tgt.mboxname, ".%", sizeof(txn->req_tgt.mboxname));
 	    mboxlist_findall(NULL,  /* internal namespace */
-			     txn->req_tgt.mboxname, 1, httpd_userid, 
+			     txn->req_tgt.mboxname, 1, httpd_userid,
 			     httpd_authstate, propfind_by_collection, fctx);
 	}
 
@@ -4771,7 +4773,7 @@ static icalcomponent *busytime_query_local(struct transaction_t *txn,
 	    /* Get busytime for all contained calendar collections */
 	    strlcat(mailboxname, ".%", MAX_MAILBOX_PATH);
 	    mboxlist_findall(NULL,  /* internal namespace */
-			     mailboxname, 1, httpd_userid, 
+			     mailboxname, 1, httpd_userid,
 			     httpd_authstate, busytime_by_collection, fctx);
 	}
 
@@ -4815,7 +4817,7 @@ static icalcomponent *busytime_query_local(struct transaction_t *txn,
 	isdur = !icaldurationtype_is_null_duration(fb->per.duration);
 	end = !isdur ? fb->per.end :
 	    icaltime_add(fb->per.start, fb->per.duration);
-	    
+
 	/* Skip periods of different type or that don't overlap */
 	if ((fb->type != next_fb->type) ||
 	    icaltime_compare(end, next_fb->per.start) < 0) continue;
@@ -4824,7 +4826,7 @@ static icalcomponent *busytime_query_local(struct transaction_t *txn,
 	next_isdur = !icaldurationtype_is_null_duration(next_fb->per.duration);
 	next_end = !next_isdur ? next_fb->per.end :
 	    icaltime_add(next_fb->per.start, next_fb->per.duration);
-	    
+
 	if (icaltime_compare(end, next_end) >= 0) {
 	    /* Current period subsumes next */
 	    next_fb->per.end = fb->per.end;
@@ -5159,7 +5161,7 @@ static int store_resource(struct transaction_t *txn, icalcomponent *ical,
     if (organizer) {
 	const char *stag;
 	if (flags & NEW_STAG) {
-	    sprintf(sched_tag, "%d-%ld-%u", getpid(), now, store_count++);
+	    SNPRINTF_LOG(sched_tag, sizeof (sched_tag), "%d-%ld-%u", getpid(), now, store_count++);
 	    stag = sched_tag;
 	}
 	else stag = cdata->sched_tag;
@@ -5913,7 +5915,7 @@ static void sched_deliver_remote(const char *recipient,
 			strlcpy(statbuf, (const char *) status, sizeof(statbuf));
 		    else
 			strlcpy(statbuf, (const char *) status, 4);
-		    
+
 		    sched_data->status = statbuf;
 		}
 
@@ -6015,7 +6017,7 @@ static void sched_vpoll_reply(icalcomponent *poll, const char *voter)
     icalproperty *prop;
 
     for (item = icalcomponent_get_first_component(poll, ICAL_ANY_COMPONENT);
-			 
+
 	 item;
 	 item = next) {
 
@@ -6142,7 +6144,7 @@ static int deliver_merge_pollstatus(icalcomponent *ical, icalcomponent *request)
 		    icalcomponent_remove_property(status->item, oldvoter);
 		    icalproperty_free(oldvoter);
 		}
-		
+
 		icalcomponent_add_property(status->item,
 					   icalproperty_new_clone(prop));
 	    }
@@ -6242,7 +6244,7 @@ static void sched_pollstatus(const char *organizer,
 	}
 
 	/* Attempt to deliver to each voter in the list - removing as we go */
-	while (voters) { 
+	while (voters) {
 	    struct strlist *next = voters->next;
 
 	    /* Don't send status back to VOTER that triggered POLLSTATUS */
@@ -6592,7 +6594,7 @@ static int deliver_merge_request(const char *attendee,
 	    if (param &&
 		icalparameter_get_partstat(param) ==
 		ICAL_PARTSTAT_NEEDSACTION) {
-		prop = 
+		prop =
 		    icalcomponent_get_first_property(new_comp,
 						     ICAL_TRANSP_PROPERTY);
 		if (prop)
@@ -7044,7 +7046,7 @@ static void sched_exclude(const char *attendee __attribute__((unused)),
 /*
  * sched_request() helper function
  *
- * Process all attendees in the given component and add a 
+ * Process all attendees in the given component and add a
  * properly modified component to the attendee's iTIP request if necessary
  */
 static void process_attendees(icalcomponent *comp, unsigned ncomp,
@@ -7528,7 +7530,7 @@ static icalcomponent *trim_attendees(icalcomponent *comp, const char *userid,
 
 	    if (partstat) {
 		/* Get the PARTSTAT */
-		icalparameter *param = 
+		icalparameter *param =
 		    icalproperty_get_first_parameter(myattendee,
 						     ICAL_PARTSTAT_PARAMETER);
 		if (param) *partstat = icalparameter_get_partstat(param);

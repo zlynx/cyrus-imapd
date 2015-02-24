@@ -638,7 +638,7 @@ static void imapd_refer(const char *tag,
     imapurl.mailbox = mailbox;
     imapurl.auth = !strcmp(imapd_userid, "anonymous") ? "anonymous" : "*";
 
-    imapurl_toURL(url, &imapurl);
+    imapurl_toURL(url, sizeof (url), &imapurl);
 
     prot_printf(imapd_out, "%s NO [REFERRAL %s] Remote mailbox.\r\n",
 		tag, url);
@@ -5847,14 +5847,8 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
     /* was it a top-level user mailbox? */
     /* localonly deletes are only per-mailbox */
     if (!r && !localonly && mboxname_isusermailbox(mailboxname, 1)) {
-	size_t mailboxname_len = strlen(mailboxname);
 	const char *userid = mboxname_to_userid(mailboxname);
-
-	/* If we aren't too close to MAX_MAILBOX_BUFFER, append .* */
-	p = mailboxname + mailboxname_len; /* end of mailboxname */
-	if (mailboxname_len < sizeof(mailboxname) - 3) {
-	    strcpy(p, ".*");
-	}
+	STRLCAT_LOG(mailboxname, ".*", sizeof(mailboxname));
 
 	/* build a list of mailboxes - we're using internal names here */
 	mboxlist_findall(NULL, mailboxname,
@@ -5906,7 +5900,7 @@ static int checkmboxname(char *name,
     if((text->nl + strlen(name + text->ol)) >= MAX_MAILBOX_BUFFER)
 	return IMAP_MAILBOX_BADNAME;
 
-    strcpy(text->newmailboxname + text->nl, name + text->ol);
+    (void) strcpy(text->newmailboxname + text->nl, name + text->ol);
 
     /* force create, but don't ignore policy.  This is a filthy hack that
        will go away when we refactor this code */
@@ -5938,7 +5932,7 @@ static int renmbox(char *name,
     if((text->nl + strlen(name + text->ol)) >= MAX_MAILBOX_BUFFER)
 	goto done;
 
-    strcpy(text->newmailboxname + text->nl, name + text->ol);
+    (void) strcpy(text->newmailboxname + text->nl, name + text->ol);
 
     /* don't notify implied rename in mailbox hierarchy */
     r = mboxlist_renamemailbox(name, text->newmailboxname,
@@ -6041,8 +6035,8 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
     }
 
     /* Keep temporary copy: master is trashed */
-    strcpy(oldmailboxname2, oldmailboxname);
-    strcpy(newmailboxname2, newmailboxname);
+    (void) strlcpy(oldmailboxname2, oldmailboxname, sizeof (oldmailboxname2));
+    (void) strlcpy(newmailboxname2, newmailboxname, sizeof (newmailboxname2));
 
     r = mlookup(NULL, NULL, oldmailboxname, &mbentry);
 
@@ -6222,10 +6216,10 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
 	char ombn[MAX_MAILBOX_BUFFER];
 	char nmbn[MAX_MAILBOX_BUFFER];
 
-	strcpy(ombn, oldmailboxname);
-	strcpy(nmbn, newmailboxname);
-	strcat(ombn, ".*");
-	strcat(nmbn, ".");
+	(void) strlcpy(ombn, oldmailboxname, sizeof (ombn));
+	(void) strlcpy(nmbn, newmailboxname, sizeof (nmbn));
+	STRLCAT_LOG(ombn, ".*", sizeof (ombn));
+	STRLCAT_LOG(nmbn, ".", sizeof (nmbn));
 
 	/* setup the rock */
 	rock.namespace = &imapd_namespace;
@@ -6283,11 +6277,15 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
 	/* create canonified userids */
 
 	domain = strchr(oldmailboxname, '!');
-	strcpy(olduser, domain ? domain+6 : oldmailboxname+5);
-	if (domain)
-	    sprintf(olduser+strlen(olduser), "@%.*s",
-		    (int) (domain - oldmailboxname), oldmailboxname);
-	strcpy(acl_olduser, olduser);
+	if (domain == NULL) {
+		STRLCPY_LOG(olduser, oldmailboxname+5, sizeof (olduser));
+	} else {
+		SNPRINTF_LOG(
+			olduser, sizeof (olduser), "%s@%.*s",
+			domain+6, (int) (domain - oldmailboxname), oldmailboxname
+		);
+	}
+	STRLCPY_LOG(acl_olduser, olduser, sizeof (acl_olduser));
 
 	/* Translate any separators in source old userid (for ACLs) */
 	mboxname_hiersep_toexternal(&imapd_namespace, acl_olduser,
@@ -6295,11 +6293,15 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
 				    strcspn(acl_olduser, "@") : 0);
 
 	domain = strchr(newmailboxname, '!');
-	strcpy(newuser, domain ? domain+6 : newmailboxname+5);
-	if (domain)
-	    sprintf(newuser+strlen(newuser), "@%.*s",
-		    (int) (domain - newmailboxname), newmailboxname);
-	strcpy(acl_newuser, newuser);
+	if (domain == NULL) {
+		STRLCPY_LOG(newuser, newmailboxname+5, sizeof (newuser));
+	} else {
+		SNPRINTF_LOG(
+			newuser, sizeof (newuser), "%s@%.*s",
+			domain+6, (int) (domain - newmailboxname), newmailboxname
+		);
+	}
+	STRLCPY_LOG(acl_newuser, newuser, sizeof (acl_newuser));
 
 	/* Translate any separators in destination new userid (for ACLs) */
 	mboxname_hiersep_toexternal(&imapd_namespace, acl_newuser,
@@ -6322,8 +6324,8 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
 	prot_flush(imapd_out);
 
 submboxes:
-	strcat(oldmailboxname, ".*");
-	strcat(newmailboxname, ".");
+	STRLCAT_LOG(oldmailboxname, ".*", sizeof (oldmailboxname));
+	STRLCAT_LOG(newmailboxname, ".", sizeof (newmailboxname));
 
 	/* setup the rock */
 	rock.namespace = &imapd_namespace;
@@ -6463,9 +6465,9 @@ static void cmd_reconstruct(const char *tag, const char *name, int recursive)
 
     if(!r) {
 	if(mailbox->quotaroot) {
-	    strcpy(quotaroot, mailbox->quotaroot);
+	    STRLCPY_LOG(quotaroot, mailbox->quotaroot, sizeof (quotaroot));
 	} else {
-	    strcpy(quotaroot, mailboxname);
+	    STRLCPY_LOG(quotaroot, mailboxname, sizeof (quotaroot));
 	}
 	mailbox_close(&mailbox);
     }
@@ -6897,7 +6899,7 @@ static void cmd_listrights(char *tag, char *name, char *identifier)
 	cyrus_acl_masktostr(implicit, rightsdesc);
     }
     else {
-	strcpy(rightsdesc, "\"\"");
+	(void) strcpy(rightsdesc, "\"\"");
     }
 
     if (*optional) {
@@ -8870,11 +8872,11 @@ static void cmd_getmetadata(const char *tag)
 	}
 	strarray_append(&newe, entry);
 	if (opts.depth == 1) {
-	    strncat(entry, "/%", MAX_MAILBOX_NAME);
+	    STRLCAT_LOG(entry, "/%", sizeof (entry));
 	    strarray_append(&newe, entry);
 	}
 	else if (opts.depth == -1) {
-	    strncat(entry, "/*", MAX_MAILBOX_NAME);
+	    STRLCAT_LOG(entry, "/*", sizeof (entry));
 	    strarray_append(&newe, entry);
 	}
     }
@@ -11610,10 +11612,10 @@ static char *canonical_list_pattern(const char *reference, const char *pattern)
 	if (reference[reflen-1] == imapd_namespace.hier_sep &&
 		pattern[0] == imapd_namespace.hier_sep)
 	    --reflen;
-	memcpy(buf, reference, reflen);
+	(void) memcpy(buf, reference, reflen);
 	buf[reflen] = '\0';
     }
-    strcat(buf, pattern);
+    (void) strcat(buf, pattern);
 
     return buf;
 }
@@ -12324,8 +12326,8 @@ static void cmd_genurlauth(char *tag)
 
 	urlauth = xrealloc(urlauth, strlen(arg1.s) + 10 +
 			   2 * (EVP_MAX_MD_SIZE+1) + 1);
-	strcpy(urlauth, arg1.s);
-	strcat(urlauth, ":internal:");
+	(void) strcpy(urlauth, arg1.s);
+	(void) strcat(urlauth, ":internal:");
 	bin_to_hex(token, token_len, urlauth+strlen(urlauth), BH_LOWER);
 
 	if (first) {

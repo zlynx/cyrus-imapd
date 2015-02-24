@@ -481,7 +481,7 @@ struct mime_type_t *get_accept_type(const char **hdr, struct mime_type_t *types)
     for (e = enc; e && e->token; e++) {
 	if (!ret && e->qual > 0.0) {
 	    struct mime_type_t *m;
-				     
+
 	    for (m = types; !ret && m->content_type; m++) {
 		if (is_mediatype(e->token, m->content_type)) ret = m;
 	    }
@@ -515,7 +515,7 @@ int ensure_ns(xmlNsPtr *respNs, int ns, xmlNodePtr node,
 		(nsDef->prefix && prefix &&
 		 !strcmp((const char *) nsDef->prefix, prefix))) break;
 	}
-    
+
 	if (nsDef) {
 	    /* Prefix is already used - generate a new one */
 	    snprintf(myprefix, sizeof(myprefix), "X%X", strhash(url) & 0xffff);
@@ -703,7 +703,7 @@ void xml_add_lockdisc(xmlNodePtr node, const char *root, struct dav_data *data)
 	xml_add_href(node1, NULL, root);
     }
 }
-		      
+
 
 /* Add a property 'name', of namespace 'ns', with content 'content',
  * and status code/string 'status' to propstat element 'stat'.
@@ -736,7 +736,7 @@ struct allprop_rock {
     struct propstat *propstat;
 };
 
-/* Add a response tree to 'root' for the specified href and 
+/* Add a response tree to 'root' for the specified href and
    either error code or property list */
 int xml_add_response(struct propfind_ctx *fctx, long code, unsigned precond)
 {
@@ -907,7 +907,7 @@ int propfind_getdata(const xmlChar *name, xmlNsPtr ns,
 	if (mime != mime_types) {
 	    /* Not the storage format - convert into requested MIME type */
 	    void *obj = mime_types->from_string(data);
-	    
+
 	    data = freeme = mime->to_string(obj);
 	    datalen = strlen(data);
 	    mime_types->free(obj);
@@ -1136,7 +1136,7 @@ int proppatch_restype(xmlNodePtr prop, unsigned set,
 
     xml_add_prop(HTTP_FORBIDDEN, pctx->ns[NS_DAV], &propstat[PROPSTAT_FORBID],
 		 prop->name, prop->ns, NULL, precond);
-	     
+
     *pctx->ret = HTTP_FORBIDDEN;
 
     return 0;
@@ -1708,7 +1708,8 @@ EXPORTED int propfind_quota(const xmlChar *name, xmlNsPtr ns,
 
 	syslog(LOG_DEBUG, "reading quota for '%s'", qr);
 
-	fctx->quota.root = strcpy(prevroot, qr);
+	STRLCPY_LOG(prevroot, qr, sizeof (prevroot));
+	fctx->quota.root = prevroot;
 
 	quota_read(&fctx->quota, NULL, 0);
     }
@@ -1843,7 +1844,7 @@ int propfind_fromhdr(const xmlChar *name, xmlNsPtr ns,
 	!mailbox_cacherecord(fctx->mailbox, fctx->record)) {
 	unsigned size;
 	struct protstream *stream;
-	hdrcache_t hdrs = NULL; 
+	hdrcache_t hdrs = NULL;
 	const char **hdr;
 
 	size = cacheitem_size(fctx->record, CACHE_HEADERS);
@@ -2946,7 +2947,7 @@ int meth_copy(struct transaction_t *txn, void *params)
 
 	/* Replace cached Destination header with just the absolute path */
 	hdr = spool_getheader(txn->req_hdrs, "Destination");
-	strcpy((char *) hdr[0], dest_tgt.path);
+	/* ACH: DANGER unknown size */ strcpy((char *) hdr[0], dest_tgt.path);
 
 	if (src_be == dest_be) {
 	    /* Simply send the COPY to the backend */
@@ -3137,7 +3138,7 @@ int meth_delete(struct transaction_t *txn, void *params)
     if (r) return r;
 
     /* Make sure method is allowed */
-    if (!(txn->req_tgt.allow & ALLOW_DELETE)) return HTTP_NOT_ALLOWED; 
+    if (!(txn->req_tgt.allow & ALLOW_DELETE)) return HTTP_NOT_ALLOWED;
 
     /* Locate the mailbox */
     r = http_mlookup(txn->req_tgt.mboxname, &mbentry, NULL);
@@ -3538,7 +3539,7 @@ int meth_lock(struct transaction_t *txn, void *params)
 				 &txn->req_tgt, &txn->error.desc))) return r;
 
     /* Make sure method is allowed (only allowed on resources) */
-    if (!(txn->req_tgt.allow & ALLOW_WRITE)) return HTTP_NOT_ALLOWED; 
+    if (!(txn->req_tgt.allow & ALLOW_WRITE)) return HTTP_NOT_ALLOWED;
 
     /* Locate the mailbox */
     r = http_mlookup(txn->req_tgt.mboxname, &mbentry, NULL);
@@ -4344,7 +4345,7 @@ EXPORTED int meth_propfind(struct transaction_t *txn, void *params)
 	    /* Add responses for all contained calendar collections */
 	    strlcat(txn->req_tgt.mboxname, ".%", sizeof(txn->req_tgt.mboxname));
 	    r = mboxlist_findall(NULL,  /* internal namespace */
-				 txn->req_tgt.mboxname, 1, httpd_userid, 
+				 txn->req_tgt.mboxname, 1, httpd_userid,
 				 httpd_authstate, propfind_by_collection, &fctx);
 	}
 
@@ -4570,7 +4571,7 @@ int meth_post(struct transaction_t *txn, void *params)
 				 &txn->req_tgt, &txn->error.desc))) return r;
 
     /* Make sure method is allowed (only allowed on certain collections) */
-    if (!(txn->req_tgt.allow & ALLOW_POST)) return HTTP_NOT_ALLOWED; 
+    if (!(txn->req_tgt.allow & ALLOW_POST)) return HTTP_NOT_ALLOWED;
 
     /* Do any special processing */
     if (pparams->post) {
@@ -4897,7 +4898,7 @@ int report_sync_col(struct transaction_t *txn,
 		    /* DAV:valid-sync-token */
 		    txn->error.precond = DAV_SYNC_TOKEN;
 		    ret = HTTP_FORBIDDEN;
-		}		    
+		}
 	    }
 	    else if (!xmlStrcmp(node->name, BAD_CAST "sync-level") &&
 		(str = xmlNodeListGetString(inroot->doc, node->children, 1))) {
@@ -5128,7 +5129,7 @@ int expand_property(xmlNodePtr inroot, struct propfind_ctx *fctx,
 	    strlcat(fctx->req_tgt->mboxname, ".%",
 		    sizeof(fctx->req_tgt->mboxname));
 	    r = mboxlist_findall(NULL,  /* internal namespace */
-				 fctx->req_tgt->mboxname, 1, httpd_userid, 
+				 fctx->req_tgt->mboxname, 1, httpd_userid,
 				 httpd_authstate, propfind_by_collection, fctx);
 	}
 
@@ -5375,7 +5376,7 @@ static int report_prin_prop_search(struct transaction_t *txn,
 	/* XXX  Do LDAP/SQL lookup of CN/email-address(es) here */
 
 	ret = mboxlist_findall(NULL,  /* internal namespace */
-			       "user.%", 1, httpd_userid, 
+			       "user.%", 1, httpd_userid,
 			       httpd_authstate, principal_search, fctx);
     }
 
@@ -5449,7 +5450,7 @@ int meth_report(struct transaction_t *txn, void *params)
 				 &txn->req_tgt, &txn->error.desc))) return r;
 
     /* Make sure method is allowed */
-    if (!(txn->req_tgt.allow & ALLOW_DAV)) return HTTP_NOT_ALLOWED; 
+    if (!(txn->req_tgt.allow & ALLOW_DAV)) return HTTP_NOT_ALLOWED;
 
     /* Check Depth */
     if ((hdr = spool_getheader(txn->req_hdrs, "Depth"))) {
@@ -5674,7 +5675,7 @@ int meth_unlock(struct transaction_t *txn, void *params)
 				 &txn->req_tgt, &txn->error.desc))) return r;
 
     /* Make sure method is allowed (only allowed on resources) */
-    if (!(txn->req_tgt.allow & ALLOW_WRITE)) return HTTP_NOT_ALLOWED; 
+    if (!(txn->req_tgt.allow & ALLOW_WRITE)) return HTTP_NOT_ALLOWED;
 
     /* Check for mandatory Lock-Token header */
     if (!(hdr = spool_getheader(txn->req_hdrs, "Lock-Token"))) {

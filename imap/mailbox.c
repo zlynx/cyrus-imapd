@@ -338,7 +338,7 @@ EXPORTED unsigned mailbox_cached_header(const char *s)
     int i;
 
     /* Generate lower case copy of string */
-    /* xxx sometimes the caller has already generated this .. 
+    /* xxx sometimes the caller has already generated this ..
      * maybe we can just require callers to do it? */
     for (i=0 ; *s && (i < (MAX_CACHED_HEADER_SIZE - 1)) ; i++)
 	hdr[i] = tolower(*s++);
@@ -360,7 +360,7 @@ HIDDEN unsigned mailbox_cached_header_inline(const char *text)
     /* Scan for header */
     for (i=0; i < (MAX_CACHED_HEADER_SIZE - 1); i++) {
 	if (!text[i] || text[i] == '\r' || text[i] == '\n') break;
-	
+
 	if (text[i] == ':') {
 	    buf[i] = '\0';
 	    return is_cached_header(buf);
@@ -692,7 +692,7 @@ static int mailbox_commit_cache(struct mailbox *mailbox)
 
     /* not open! That's bad */
     if (mailbox->cache_fd == -1)
-	abort(); 
+	abort();
 
     /* just fsync is all that's needed to commit */
     (void)fsync(mailbox->cache_fd);
@@ -906,7 +906,7 @@ static int mailbox_open_advanced(const char *name,
 	    return IMAP_MAILBOX_LOCKED;
 	/* can't reuse an already locked index */
 	if (listitem->m.index_locktype)
-	    return IMAP_MAILBOX_LOCKED;   
+	    return IMAP_MAILBOX_LOCKED;
 
 	listitem->nopen++;
 	mailbox = &listitem->m;
@@ -1097,7 +1097,7 @@ EXPORTED void mailbox_close(struct mailbox **mailboxptr)
 	    /* anyway, unlock again */
 	    mailbox_unlock_index(mailbox, NULL);
 	}
-	/* otherwise someone else has the mailbox locked 
+	/* otherwise someone else has the mailbox locked
 	 * already, so they can handle the cleanup in
 	 * THEIR mailbox_close call */
     }
@@ -1278,7 +1278,7 @@ EXPORTED int mailbox_set_quotaroot(struct mailbox *mailbox, const char *quotaroo
 	    return 0; /* no change */
     }
 
-    if (quotaroot) 
+    if (quotaroot)
 	mailbox->quotaroot = xstrdup(quotaroot);
 
     /* either way, it's changed, so dirty */
@@ -1311,7 +1311,7 @@ EXPORTED int mailbox_user_flag(struct mailbox *mailbox, const char *flag,
 	if (!create)
 	    return IMAP_NOTFOUND;
 
-	if (emptyflag == -1) 
+	if (emptyflag == -1)
 	    return IMAP_USERFLAG_EXHAUSTED;
 
 	/* need to be index locked to make flag changes */
@@ -1570,7 +1570,7 @@ static int mailbox_buf_to_index_record(const char *buf,
 
     if (version < 10) {
 	/* modseq was at 72 before the GUID move */
-	record->modseq = ntohll(*((bit64 *)(buf+72))); 
+	record->modseq = ntohll(*((bit64 *)(buf+72)));
 	return 0;
     }
 
@@ -1803,7 +1803,7 @@ EXPORTED void mailbox_unlock_index(struct mailbox *mailbox, struct statusdata *s
 
     if (mailbox->index_locktype) {
 	if (lock_unlock(mailbox->index_fd, index_fname))
-	    syslog(LOG_ERR, "IOERROR: unlocking index of %s: %m", 
+	    syslog(LOG_ERR, "IOERROR: unlocking index of %s: %m",
 		mailbox->name);
 	mailbox->index_locktype = 0;
     }
@@ -2210,7 +2210,7 @@ static uint32_t crc32_record(const struct mailbox *mailbox,
 	return 0;
 
     /* calculate an XORed CRC32 over all the flags on the message, so no
-     * matter what order they are store in the header, the final value 
+     * matter what order they are store in the header, the final value
      * is the same */
     if (record->system_flags & FLAG_DELETED)
 	flagcrc ^= crc32_cstring("\\deleted");
@@ -2531,7 +2531,7 @@ EXPORTED uint32_t mailbox_sync_crc(struct mailbox *mailbox, unsigned vers, int f
 	if (record.system_flags & FLAG_EXPUNGED)
 	    continue;
 
-	if (alg->record) 
+	if (alg->record)
 	    crc ^= alg->record(mailbox, &record);
 
 	if (alg->annot) {
@@ -3897,7 +3897,7 @@ static void mailbox_delete_files(char *path)
 		       buf, f->d_name);
 		fatal("Path too long", EC_OSFILE);
 	    }
-	    strcpy(tail, f->d_name);
+	    (void) strcpy(tail, f->d_name);
 	    unlink(buf);
 	    *tail = '\0';
 	}
@@ -3975,7 +3975,7 @@ EXPORTED int mailbox_delete(struct mailbox **mailboxptr)
 
     /* can't unlink any files yet, because our promise to other
      * users of the mailbox applies! Can only unlink with an
-     * exclusive lock.  mailbox_close will try to get one of 
+     * exclusive lock.  mailbox_close will try to get one of
      * those.
      */
 
@@ -3984,7 +3984,7 @@ EXPORTED int mailbox_delete(struct mailbox **mailboxptr)
     if (config_auditlog)
 	syslog(LOG_NOTICE, "auditlog: delete sessionid=<%s> "
 			   "mailbox=<%s> uniqueid=<%s>",
-			   session_id(), 
+			   session_id(),
 			   mailbox->name, mailbox->uniqueid);
 
     proc_killmbox(mailbox->name);
@@ -4013,23 +4013,23 @@ HIDDEN int mailbox_delete_cleanup(const char *part, const char *name)
     /* Flush data (message file) directory */
     path = mboxname_datapath(part, name, 0);
     mailbox_delete_files(path);
-    strlcpy(pbuf, path, sizeof(pbuf));
+    STRLCPY_LOG(pbuf, path, sizeof(pbuf));
     ptail = pbuf + strlen(pbuf);
 
     /* Flush metadata directory */
     mpath = mboxname_metapath(part, name, 0, 0);
     if (strcmp(path, mpath)) {
 	mailbox_delete_files(mpath);
-	strlcpy(mbuf, mpath, sizeof(mbuf));
+	STRLCPY_LOG(mbuf, mpath, sizeof(mbuf));
 	mtail = mbuf + strlen(mbuf);
     }
 
-    strlcpy(nbuf, name, sizeof(nbuf));
+    STRLCPY_LOG(nbuf, name, sizeof(nbuf));
     ntail = nbuf + strlen(nbuf);
 
     do {
 	/* Check if the mailbox has children */
-	strcpy(ntail, ".*");
+	STRLCPY_LOG(ntail, ".*", sizeof (nbuf) - (ntail - nbuf));
 	r = mboxlist_findall(NULL, nbuf, 1, NULL, NULL, chkchildren, (void *)part);
 	if (r != 0) break; /* We short-circuit with CYRUSDB_DONE */
 
@@ -4142,7 +4142,7 @@ EXPORTED int mailbox_copy_files(struct mailbox *mailbox, const char *newpart,
 /* if 'userid' is set, we perform the funky RENAME INBOX INBOX.old
    semantics, regardless of whether or not the name of the mailbox is
    'user.foo'.*/
-/* requires a write-locked oldmailbox pointer, since we delete it 
+/* requires a write-locked oldmailbox pointer, since we delete it
    immediately afterwards */
 HIDDEN int mailbox_rename_copy(struct mailbox *oldmailbox,
 			const char *newname,
@@ -4362,7 +4362,7 @@ static int find_files(struct mailbox *mailbox, struct found_uids *files,
 	/* need to re-create data directory */
 	if (cyrus_mkdir(dirpath, 0755) == -1)
 	    return IMAP_IOERROR;
-	if (mkdir(dirpath, 0755) == -1) 
+	if (mkdir(dirpath, 0755) == -1)
 	    return IMAP_IOERROR;
 	return 0;
     }
@@ -4505,7 +4505,7 @@ static int mailbox_reconstruct_create(const char *name, struct mailbox **mbptr)
     mailbox->mbtype = mbentry->mbtype;
 
     syslog(LOG_NOTICE, "create new mailbox %s", name);
- 
+
     /* Attempt to open index */
     r = mailbox_open_index(mailbox);
     if (!r) r = mailbox_read_index_header(mailbox);
@@ -4689,7 +4689,7 @@ static int mailbox_reconstruct_compare_update(struct mailbox *mailbox,
 	}
 	did_stat = 1;
     }
-	
+
     if (!have_file) {
 	/* well, that's OK if it's supposed to be missing! */
 	if (record->system_flags & FLAG_UNLINKED)
@@ -5264,7 +5264,7 @@ EXPORTED int mailbox_reconstruct(const char *name, int flags)
 	add_found(&delannots, annots.uids[annots.pos]);
 	annots.pos++;
     }
-    
+
     /* handle new list - note, we don't copy annotations for these */
     while (discovered.pos < discovered.nused) {
 	r = mailbox_reconstruct_append(mailbox, discovered.uids[discovered.pos], flags);

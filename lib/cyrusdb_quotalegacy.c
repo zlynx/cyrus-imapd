@@ -450,7 +450,7 @@ static int myfetch(struct dbengine *db, char *quota_path,
     return 0;
 }
 
-static int fetch(struct dbengine *db, 
+static int fetch(struct dbengine *db,
 		 const char *key, size_t keylen,
 		 const char **data, size_t *datalen,
 		 struct txn **tid)
@@ -480,7 +480,7 @@ static const char *path_to_qr(const char *path, char *buf)
     if ((p = strstr(path, FNAME_DOMAINDIR))) {
 	/* use the quota_path as a buffer to construct virtdomain qr */
 	p += strlen(FNAME_DOMAINDIR) + 2; /* +2 for hashdir */
-	sprintf(buf, "%.*s!%s", (int) strcspn(p, "/"), p,
+	/* ACH: DANGER sizeof buf unknown */ sprintf(buf, "%.*s!%s", (int) strcspn(p, "/"), p,
 		strcmp(qr, "root") ? qr : "");
 	qr = buf;
     }
@@ -522,8 +522,8 @@ static void scan_qr_dir(char *quota_path, const char *prefix,
     struct dirent *next = NULL;
 
     /* strip off the qr specific path */
-    endp = strstr(quota_path, FNAME_QUOTADIR) + strlen(FNAME_QUOTADIR);
-    strcpy(endp, "?/");
+    endp = strstr(quota_path, FNAME_QUOTADIR) + STRLEN(FNAME_QUOTADIR);
+    STRLCPY_LOG(endp, "?/", MAX_QUOTA_PATH+1 - (endp-quota_path));
 
     /* check for path restriction - if there's a prefix we only
      * need to scan a single directory */
@@ -555,7 +555,7 @@ static void scan_qr_dir(char *quota_path, const char *prefix,
 	/* search for a domain quota */
 	struct stat buf;
 
-	strcpy(endp, "root");
+	STRLCPY_LOG(endp, "root", MAX_QUOTA_PATH+1 - (endp-quota_path));
 
 	if (!stat(quota_path, &buf))
 	    strarray_append(pathbuf, quota_path);
@@ -565,7 +565,7 @@ static void scan_qr_dir(char *quota_path, const char *prefix,
 static int foreach(struct dbengine *db,
 		   const char *prefix, size_t prefixlen,
 		   foreach_p *goodp,
-		   foreach_cb *cb, void *rock, 
+		   foreach_cb *cb, void *rock,
 		   struct txn **tid)
 {
     int r = CYRUSDB_OK;
@@ -656,7 +656,7 @@ static int foreach(struct dbengine *db,
     return r;
 }
 
-static int mystore(struct dbengine *db, 
+static int mystore(struct dbengine *db,
 		   const char *key, size_t keylen,
 		   const char *data, size_t datalen,
 		   struct txn **tid, int overwrite)
@@ -803,7 +803,7 @@ static int mystore(struct dbengine *db,
     return r;
 }
 
-static int create(struct dbengine *db, 
+static int create(struct dbengine *db,
 		  const char *key, size_t keylen,
 		  const char *data, size_t datalen,
 		  struct txn **tid)
@@ -811,7 +811,7 @@ static int create(struct dbengine *db,
     return mystore(db, key, keylen, data, datalen, tid, 0);
 }
 
-static int store(struct dbengine *db, 
+static int store(struct dbengine *db,
 		 const char *key, size_t keylen,
 		 const char *data, size_t datalen,
 		 struct txn **tid)
@@ -819,7 +819,7 @@ static int store(struct dbengine *db,
     return mystore(db, key, keylen, data, datalen, tid, 1);
 }
 
-static int delete(struct dbengine *db, 
+static int delete(struct dbengine *db,
 		  const char *key, size_t keylen,
 		  struct txn **mytid, int force __attribute__((unused)))
 {
@@ -863,7 +863,7 @@ static int mycompar(struct dbengine *db, const char *a, int alen,
 {
     if (db->compar == compar_qr_mbox)
 	return bsearch_ncompare_mbox(a, alen, b, blen);
-    else 
+    else
 	return bsearch_ncompare_raw(a, alen, b, blen);
 }
 

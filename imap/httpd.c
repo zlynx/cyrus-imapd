@@ -334,10 +334,10 @@ static void httpd_reset(void)
 
     if (config_auditlog) {
 	syslog(LOG_NOTICE,
-	       "auditlog: traffic sessionid=<%s> bytes_in=<%d> bytes_out=<%d>", 
+	       "auditlog: traffic sessionid=<%s> bytes_in=<%d> bytes_out=<%d>",
 	       session_id(), bytes_in, bytes_out);
     }
-    
+
     httpd_in = httpd_out = NULL;
 
     if (protin) protgroup_reset(protin);
@@ -351,7 +351,7 @@ static void httpd_reset(void)
 
     cyrus_reset_stdio();
 
-    strcpy(httpd_clienthost, "[local]");
+    (void) strlcpy(httpd_clienthost, "[local]", sizeof (httpd_clienthost));
     if (httpd_logfd != -1) {
 	close(httpd_logfd);
 	httpd_logfd = -1;
@@ -534,8 +534,8 @@ int service_main(int argc __attribute__((unused)),
 	 httpd_remoteaddr.ss_family == AF_INET6)) {
 	if (getnameinfo((struct sockaddr *)&httpd_remoteaddr, salen,
 			hbuf, sizeof(hbuf), NULL, 0, NI_NAMEREQD) == 0) {
-    	    strncpy(httpd_clienthost, hbuf, sizeof(hbuf));
-	    strlcat(httpd_clienthost, " ", sizeof(httpd_clienthost));
+    	    (void) strlcpy(httpd_clienthost, hbuf, sizeof(httpd_clienthost));
+	    STRLCAT_LOG(httpd_clienthost, " ", sizeof(httpd_clienthost));
 	} else {
 	    httpd_clienthost[0] = '\0';
 	}
@@ -562,7 +562,7 @@ int service_main(int argc __attribute__((unused)),
     /* other params should be filled in */
     if (sasl_server_new("HTTP", config_servername, NULL, NULL, NULL, NULL,
 			SASL_USAGE_FLAGS, &httpd_saslconn) != SASL_OK)
-	fatal("SASL failed initializing: sasl_server_new()",EC_TEMPFAIL); 
+	fatal("SASL failed initializing: sasl_server_new()",EC_TEMPFAIL);
 
     /* will always return something valid */
     secprops = mysasl_secprops(0);
@@ -574,16 +574,16 @@ int service_main(int argc __attribute__((unused)),
 	fatal("Failed to set SASL property", EC_TEMPFAIL);
     if (sasl_setprop(httpd_saslconn, SASL_SSF_EXTERNAL, &extprops_ssf) != SASL_OK)
 	fatal("Failed to set SASL property", EC_TEMPFAIL);
-    
+
     if(iptostring((struct sockaddr *)&httpd_localaddr,
 		  salen, localip, 60) == 0) {
 	sasl_setprop(httpd_saslconn, SASL_IPLOCALPORT, localip);
 	saslprops.iplocalport = xstrdup(localip);
     }
-    
+
     if(iptostring((struct sockaddr *)&httpd_remoteaddr,
 		  salen, remoteip, 60) == 0) {
-	sasl_setprop(httpd_saslconn, SASL_IPREMOTEPORT, remoteip);  
+	sasl_setprop(httpd_saslconn, SASL_IPREMOTEPORT, remoteip);
 	saslprops.ipremoteport = xstrdup(remoteip);
     }
 
@@ -613,7 +613,7 @@ int service_main(int argc __attribute__((unused)),
     prot_settimeout(httpd_in, httpd_timeout);
     prot_setflushonread(httpd_in, httpd_out);
 
-    /* we were connected on https port so we should do 
+    /* we were connected on https port so we should do
        TLS negotiation immediatly */
     if (https == 1) starttls(1);
 
@@ -726,7 +726,7 @@ void shut_down(int code)
 
     if (config_auditlog)
 	syslog(LOG_NOTICE,
-	       "auditlog: traffic sessionid=<%s> bytes_in=<%d> bytes_out=<%d>", 
+	       "auditlog: traffic sessionid=<%s> bytes_in=<%d> bytes_out=<%d>",
 	       session_id(), bytes_in, bytes_out);
 
 #ifdef HAVE_SSL
@@ -790,7 +790,7 @@ static void starttls(int https)
 	/* tell client to start TLS upgrade (RFC 2817) */
 	response_header(HTTP_SWITCH_PROT, NULL);
     }
-  
+
     result=tls_start_servertls(0, /* read */
 			       1, /* write */
 			       https ? 180 : httpd_timeout,
@@ -839,7 +839,7 @@ static void starttls(int https __attribute__((unused)))
 
 
 /* Reset the given sasl_conn_t to a sane state */
-static int reset_saslconn(sasl_conn_t **conn) 
+static int reset_saslconn(sasl_conn_t **conn)
 {
     int ret;
     sasl_security_properties_t *secprops = NULL;
@@ -854,7 +854,7 @@ static int reset_saslconn(sasl_conn_t **conn)
        ret = sasl_setprop(*conn, SASL_IPREMOTEPORT,
                           saslprops.ipremoteport);
     if(ret != SASL_OK) return ret;
-    
+
     if(saslprops.iplocalport)
        ret = sasl_setprop(*conn, SASL_IPLOCALPORT,
                           saslprops.iplocalport);
@@ -1669,7 +1669,7 @@ EXPORTED char *rfc3339date_gen(char *buf, size_t len, time_t t)
     struct tm *tm = gmtime(&t);
 
     snprintf(buf, len, "%4d-%02d-%02dT%02d:%02d:%02dZ",
-	     tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, 
+	     tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
 	     tm->tm_hour, tm->tm_min, tm->tm_sec);
 
     return buf;
@@ -1686,7 +1686,7 @@ EXPORTED char *httpdate_gen(char *buf, size_t len, time_t t)
     struct tm *tm = gmtime(&t);
 
     snprintf(buf, len, "%3s, %02d %3s %4d %02d:%02d:%02d GMT",
-	     wday[tm->tm_wday], 
+	     wday[tm->tm_wday],
 	     tm->tm_mday, month[tm->tm_mon], tm->tm_year + 1900,
 	     tm->tm_hour, tm->tm_min, tm->tm_sec);
 
@@ -2021,7 +2021,7 @@ EXPORTED void response_header(long code, struct transaction_t *txn)
 	    }
 	}
 	else {
-	    /* Continue with current authentication exchange */ 
+	    /* Continue with current authentication exchange */
 	    WWW_Authenticate(auth_chal->scheme->name, auth_chal->param);
 	}
 	break;
@@ -2491,7 +2491,7 @@ EXPORTED void write_body(long code, struct transaction_t *txn,
 	    prot_write(httpd_out, buf, outlen);
 	    prot_puts(httpd_out, "\r\n");
 
-	    if (do_md5) MD5Update(&ctx, buf, outlen);	    
+	    if (do_md5) MD5Update(&ctx, buf, outlen);
 	}
 	if (!len) {
 	    /* Terminate the HTTP/1.1 body with a zero-length chunk */
@@ -2958,7 +2958,7 @@ static int http_auth(const char *creds, struct transaction_t *txn)
 	    return SASL_BADPARAM;
 	}
 	*pass++ = '\0';
-	
+
 	/* Verify the password */
 	status = sasl_checkpass(httpd_saslconn, user, strlen(user),
 				pass, strlen(pass));
@@ -3185,7 +3185,7 @@ static int parse_ranges(const char *hdr, unsigned long len,
 
 	    if (endp == p || *endp) continue;  /* bad suffix-length */
 	    if (!suffix) continue;	/* unsatisfiable suffix-length */
-		
+
 	    /* don't start before byte zero */
 	    if (suffix < len) first = len - suffix;
 	}
@@ -3424,7 +3424,7 @@ static int list_well_known(struct transaction_t *txn)
     static struct buf body = BUF_INITIALIZER;
     static time_t lastmod = 0;
     struct stat sbuf;
-    int precond;    
+    int precond;
 
     /* stat() imapd.conf for Last-Modified and ETag */
     stat(config_filename, &sbuf);
@@ -3563,7 +3563,7 @@ static int meth_get(struct transaction_t *txn,
     if (!resp_body->type) {
 	/* Caller hasn't specified the Content-Type */
 	resp_body->type = "application/octet-stream";
-	
+
 	if ((ext = strrchr(path, '.'))) {
 	    /* Try to use filename extension to identity Content-Type */
 	    const struct mimetype *mtype;

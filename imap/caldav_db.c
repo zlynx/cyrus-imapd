@@ -19,7 +19,7 @@
  *    prior written permission. For permission or any legal
  *    details, please contact
  *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
+ *      Centerfor Technology Transfer and Enterprise Creation
  *      4615 Forbes Avenue
  *      Suite 302
  *      Pittsburgh, PA  15213
@@ -182,7 +182,7 @@ EXPORTED struct caldav_db *caldav_open_userid(const char *userid, int flags)
     buf_free(&fname);
 
     /* Construct mbox name corresponding to userid's scheduling Inbox */
-    strncpy(caldavdb->sched_inbox, caldav_mboxname(userid, SCHED_INBOX), sizeof(caldavdb->sched_inbox));
+    STRLCPY_LOG(caldavdb->sched_inbox, caldav_mboxname(userid, SCHED_INBOX), sizeof(caldavdb->sched_inbox));
 
     return caldavdb;
 }

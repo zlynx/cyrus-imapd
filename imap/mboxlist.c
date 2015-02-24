@@ -782,9 +782,9 @@ static int mboxlist_create_acl(const char *mboxname, char **out)
 
 /* and this API just plain sucks */
 EXPORTED int mboxlist_createmailboxcheck(const char *name, int mbtype __attribute__((unused)),
-				const char *partition, 
-				int isadmin, const char *userid, 
-				struct auth_state *auth_state, 
+				const char *partition,
+				int isadmin, const char *userid,
+				struct auth_state *auth_state,
 				char **newacl, char **newpartition,
 				int forceuser)
 {
@@ -878,7 +878,7 @@ static int mboxlist_createmailbox_full(const char *mboxname, int mbtype,
 	/* Filesystem Operations */
 	r = mailbox_create(mboxname, mbtype, newpartition, acl, uniqueid,
 			   options, uidvalidity, &newmailbox);
-	if (r) goto done; /* CREATE failed */ 
+	if (r) goto done; /* CREATE failed */
     }
 
     /* all is well - activate the mailbox */
@@ -895,7 +895,7 @@ static int mboxlist_createmailbox_full(const char *mboxname, int mbtype,
 		      mboxent, strlen(mboxent), NULL);
 
     if (r) {
-	syslog(LOG_ERR, "DBERROR: failed to insert to mailboxes list %s: %s", 
+	syslog(LOG_ERR, "DBERROR: failed to insert to mailboxes list %s: %s",
 	       mboxname, cyrusdb_strerror(r));
 	r = IMAP_IOERROR;
     }
@@ -934,8 +934,8 @@ done:
 }
 
 EXPORTED int mboxlist_createmailbox(const char *name, int mbtype,
-			   const char *partition, 
-			   int isadmin, const char *userid, 
+			   const char *partition,
+			   int isadmin, const char *userid,
 			   struct auth_state *auth_state,
 			   int localonly, int forceuser, int dbonly,
 			   int notify, struct mailbox **mailboxptr)
@@ -1400,7 +1400,7 @@ EXPORTED int mboxlist_renamemailbox(const char *oldname, const char *newname,
 	newmbentry->acl = xstrdupnull(oldmailbox->acl);
 	newmbentry->uidvalidity = oldmailbox->i.uidvalidity;
 	mboxent = mboxlist_entry_cstring(newmbentry);
-	r = cyrusdb_store(mbdb, newname, strlen(newname), 
+	r = cyrusdb_store(mbdb, newname, strlen(newname),
 		          mboxent, strlen(mboxent), &tid);
 	if (r) goto done;
 
@@ -1646,12 +1646,12 @@ static int mboxlist_have_admin_rights(const char* rights) {
  * 3. Set db entry
  * 4. Change backup copy (cyrus.header)
  * 5. Commit transaction
- * 6. Change mupdate entry 
+ * 6. Change mupdate entry
  *
  */
 EXPORTED int mboxlist_setacl(struct namespace *namespace, const char *name,
 		    const char *identifier, const char *rights,
-		    int isadmin, const char *userid, 
+		    int isadmin, const char *userid,
 		    struct auth_state *auth_state)
 {
     mbentry_t *mbentry = NULL;
@@ -1937,7 +1937,7 @@ EXPORTED int mboxlist_setacl(struct namespace *namespace, const char *name,
  * 1. Start transaction
  * 2. Set db entry
  * 3. Commit transaction
- * 4. Change mupdate entry 
+ * 4. Change mupdate entry
  *
  */
 EXPORTED int
@@ -1995,7 +1995,7 @@ mboxlist_sync_setacls(const char *name, const char *newacl)
         mupdate_handle *mupdate_h = NULL;
 	/* commit the update to MUPDATE */
 	char buf[MAX_PARTITION_LEN + HOSTNAME_SIZE + 2];
-	sprintf(buf, "%s!%s", config_servername, mbentry->partition);
+	SNPRINTF_LOG(buf, sizeof (buf), "%s!%s", config_servername, mbentry->partition);
 
 	r = mupdate_connect(config_mupdate_server, NULL, &mupdate_h, NULL);
 	if (r) {
@@ -2095,7 +2095,7 @@ static int find_p(void *rockp,
     if (rock->find_namespace != NAMESPACE_INBOX &&
 	rock->usermboxname &&
 	keylen >= rock->usermboxnamelen &&
-	(keylen == rock->usermboxnamelen || 
+	(keylen == rock->usermboxnamelen ||
 	 key[rock->usermboxnamelen] == '.') &&
 	!strncmp(key, rock->usermboxname, rock->usermboxnamelen)) {
 	/* this would've been output with the inbox stuff, so skip it */
@@ -2161,7 +2161,7 @@ static int check_name(struct find_rock *rock,
     return 1;
 }
 
-static int find_cb(void *rockp, 
+static int find_cb(void *rockp,
 		   const char *key, size_t keylen,
 		   const char *data __attribute__((unused)),
 		   size_t datalen __attribute__((unused)))
@@ -2187,7 +2187,7 @@ static int find_cb(void *rockp,
 	if (rock->find_namespace != NAMESPACE_INBOX &&
 	    rock->usermboxname &&
 	    !strncmp(namebuf, rock->usermboxname, rock->usermboxnamelen)
-	    && (keylen == rock->usermboxnamelen || 
+	    && (keylen == rock->usermboxnamelen ||
 		namebuf[rock->usermboxnamelen] == '.')) {
 	    /* this would've been output with the inbox stuff, so skip it */
 	    return 0;
@@ -2383,7 +2383,7 @@ done:
  */
 /* Find all mailboxes that match 'pattern'. */
 EXPORTED int mboxlist_findall(struct namespace *namespace,
-		     const char *pattern, int isadmin, const char *userid, 
+		     const char *pattern, int isadmin, const char *userid,
 		     struct auth_state *auth_state, int (*proc)(), void *rock)
 {
     struct find_rock cbrock;
@@ -2825,7 +2825,7 @@ EXPORTED int mboxlist_setquotas(const char *root,
 	|| strchr(root, '*') || strchr(root, '%') || strchr(root, '?')) {
 	return IMAP_MAILBOX_BADNAME;
     }
-    
+
     quota_init(&q, root);
     r = quota_read(&q, &tid, 1);
 
@@ -2962,7 +2962,7 @@ EXPORTED int mboxlist_unsetquota(const char *root)
 	|| strchr(root, '*') || strchr(root, '%') || strchr(root, '?')) {
 	return IMAP_MAILBOX_BADNAME;
     }
-    
+
     quota_init(&q, root);
     r = quota_read(&q, NULL, 0);
     /* already unset */
@@ -2984,7 +2984,7 @@ EXPORTED int mboxlist_unsetquota(const char *root)
     }
     else
 	strlcat(pattern, ".*", sizeof(pattern));
-    
+
     /* top level mailbox */
     mboxlist_rmquota(root, 0, 0, (void *)root);
     /* submailboxes - we're using internal names here */
@@ -3142,7 +3142,7 @@ EXPORTED void mboxlist_open(const char *fname)
 	    /* Exiting TEMPFAIL because Sendmail thinks this
 	       EC_OSFILE == permanent failure. */
 	fatal("can't read mailboxes file", EC_TEMPFAIL);
-    }    
+    }
 
     free(tofree);
 
@@ -3170,7 +3170,7 @@ EXPORTED void mboxlist_done(void)
 
 /*
  * Open the subscription list for 'userid'.
- * 
+ *
  * On success, returns zero.
  * On failure, returns an error code.
  */
@@ -3214,7 +3214,7 @@ static void mboxlist_closesubs(struct db *sub)
  */
 EXPORTED int mboxlist_findsub(struct namespace *namespace,
 		     const char *pattern, int isadmin __attribute__((unused)),
-		     const char *userid, struct auth_state *auth_state, 
+		     const char *userid, struct auth_state *auth_state,
 		     int (*proc)(), void *rock, int force)
 {
     struct db *subs = NULL;
@@ -3254,7 +3254,7 @@ EXPORTED int mboxlist_findsub(struct namespace *namespace,
     cbrock.prev = NULL;
     cbrock.prevlen = 0;
 
-    /* open the subscription file that contains the mailboxes the 
+    /* open the subscription file that contains the mailboxes the
        user is subscribed to */
     if ((r = mboxlist_opensubs(userid, &subs)) != 0) {
 	goto done;
@@ -3394,7 +3394,7 @@ EXPORTED int mboxlist_allsubs(const char *userid, foreach_cb *proc, void *rock)
 
 HIDDEN int mboxlist_findsub_alt(struct namespace *namespace,
 			 const char *pattern, int isadmin __attribute__((unused)),
-			 const char *userid, struct auth_state *auth_state, 
+			 const char *userid, struct auth_state *auth_state,
 			 int (*proc)(), void *rock, int force)
 {
     struct db *subs = NULL;
@@ -3434,7 +3434,7 @@ HIDDEN int mboxlist_findsub_alt(struct namespace *namespace,
     cbrock.prev = NULL;
     cbrock.prevlen = 0;
 
-    /* open the subscription file that contains the mailboxes the 
+    /* open the subscription file that contains the mailboxes the
        user is subscribed to */
     if ((r = mboxlist_opensubs(userid, &subs)) != 0) {
 	goto done;
@@ -3546,7 +3546,7 @@ HIDDEN int mboxlist_findsub_alt(struct namespace *namespace,
 	    }
 	    cbrock.find_namespace = NAMESPACE_USER;
 	    cbrock.inboxoffset = 0;
-	
+
 	    /* iterate through prefixes matching usermboxname */
 	    strlcpy(domainpat+domainlen, "user", sizeof(domainpat)-domainlen);
 	    cyrusdb_foreach(subs,
@@ -3658,7 +3658,7 @@ EXPORTED int mboxlist_checksub(const char *name, const char *userid)
  * we don't know about 'name'.
  */
 EXPORTED int mboxlist_changesub(const char *name, const char *userid,
-				struct auth_state *auth_state, 
+				struct auth_state *auth_state,
 				int add, int force, int notify)
 {
     mbentry_t *mbentry = NULL;
@@ -3722,7 +3722,7 @@ EXPORTED int mboxlist_changesub(const char *name, const char *userid,
 EXPORTED int mboxlist_commit(struct txn *tid)
 {
     assert(tid);
-    
+
     return cyrusdb_commit(mbdb, tid);
 }
 

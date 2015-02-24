@@ -54,6 +54,7 @@
 #include "cyrusdb.h"
 #include "exitcodes.h"
 #include "libcyr_cfg.h"
+#include "util.h"
 #include "xmalloc.h"
 #include "xstrlcpy.h"
 
@@ -65,15 +66,15 @@ extern void fatal(const char *, int);
 /* --- cut here --- */
 /*
  * what berkeley db algorithm should we use for deadlock detection?
- * 
+ *
  * DB_LOCK_DEFAULT
- *    Use the default policy as specified by db_deadlock. 
+ *    Use the default policy as specified by db_deadlock.
  * DB_LOCK_OLDEST
- *    Abort the oldest transaction. 
+ *    Abort the oldest transaction.
  * DB_LOCK_RANDOM
- *    Abort a random transaction involved in the deadlock. 
+ *    Abort a random transaction involved in the deadlock.
  * DB_LOCK_YOUNGEST
- *    Abort the youngest transaction. 
+ *    Abort the youngest transaction.
  */
 
 #define CONFIG_DEADLOCK_DETECTION DB_LOCK_YOUNGEST
@@ -220,16 +221,16 @@ static int init(const char *dbdir, int myflags)
 
     /* what directory are we in? */
  retry:
-    flags |= DB_INIT_LOCK | DB_INIT_MPOOL | 
+    flags |= DB_INIT_LOCK | DB_INIT_MPOOL |
 	     DB_INIT_LOG | DB_INIT_TXN;
 #if (DB_VERSION_MAJOR > 3) || ((DB_VERSION_MAJOR == 3) && (DB_VERSION_MINOR > 0))
-    r = (dbenv->open)(dbenv, dbdir, flags, 0644); 
+    r = (dbenv->open)(dbenv, dbdir, flags, 0644);
 #else
-    r = (dbenv->open)(dbenv, dbdir, NULL, flags, 0644); 
+    r = (dbenv->open)(dbenv, dbdir, NULL, flags, 0644);
 #endif
     if (r) {
         if (do_retry && (r == ENOENT)) {
-	  /* Per sleepycat Support Request #3838 reporting a performance problem: 
+	  /* Per sleepycat Support Request #3838 reporting a performance problem:
 
 	        Berkeley DB only transactionally protects the open if you're
 	        doing a DB_CREATE.  Even if the Cyrus application is opening
@@ -238,16 +239,16 @@ static int init(const char *dbdir, int myflags)
 	        I bet if they changed it to not specifying CREATE and only
 	        creating if necessary, the problem would probably go away.
 
-	     Given that in general the file should exist, we optimize the most 
-	     often case: the file exists.  So, we add DB_CREATE only if we fail 
-	     to open the file and thereby avoid doing a stat(2) needlessly. Sure, it 
+	     Given that in general the file should exist, we optimize the most
+	     often case: the file exists.  So, we add DB_CREATE only if we fail
+	     to open the file and thereby avoid doing a stat(2) needlessly. Sure, it
 	     should be cached by why waste the cycles anyway?
 	  */
 	  flags |= DB_CREATE;
 	  do_retry = 0;
 	  goto retry;
         }
-	
+
 	syslog(LOG_ERR, "DBERROR: dbenv->open '%s' failed: %s", dbdir,
 	       db_strerror(r));
 	return CYRUSDB_IOERROR;
@@ -308,7 +309,7 @@ static int myarchive(const strarray_t *fnames, const char *dirname)
     char dstname[1024], *dp;
     int length, rest;
 
-    strlcpy(dstname, dirname, sizeof(dstname));
+    STRLCPY_LOG(dstname, dirname, sizeof(dstname));
     length = strlen(dstname);
     dp = dstname + length;
     rest = sizeof(dstname) - length;
@@ -346,7 +347,7 @@ static int myarchive(const strarray_t *fnames, const char *dirname)
 	    /* only archive those files specified by the app */
 	    if (strarray_find(fnames, *item, 0) >= 0) {
 		syslog(LOG_DEBUG, "archiving database file: %s", *item);
-		strlcpy(dp, strrchr(*item, '/'), rest);
+		STRLCPY_LOG(dp, strrchr(*item, '/'), rest);
 		r = cyrusdb_copyfile(*item, dstname);
 		if (r) {
 		    syslog(LOG_ERR,
@@ -369,7 +370,7 @@ static int myarchive(const strarray_t *fnames, const char *dirname)
     if (list != NULL) {
 	for (item = list; *item != NULL; ++item) {
 	    syslog(LOG_DEBUG, "archiving log file: %s", *item);
-	    strcpy(dp, strrchr(*item, '/'));
+	    STRLCPY_LOG(dp, strrchr(*item, '/'), rest);
 	    r = cyrusdb_copyfile(*item, dstname);
 	    if (r) {
 		syslog(LOG_ERR, "DBERROR: error archiving log file: %s",
@@ -484,7 +485,7 @@ static int gettid(struct txn **mytid, DB_TXN **tid, const char *where)
     return 0;
 }
 
-static int myfetch(struct dbengine *mydb, 
+static int myfetch(struct dbengine *mydb,
 		   const char *key, size_t keylen,
 		   const char **data, size_t *datalen,
 		   struct txn **mytid, int flags)
@@ -493,7 +494,7 @@ static int myfetch(struct dbengine *mydb,
     DBT k, d;
     DB *db = (DB *) mydb;
     DB_TXN *tid = NULL;
-	
+
     assert(dbinit && db);
 
     if (data) *data = NULL;
@@ -534,7 +535,7 @@ static int myfetch(struct dbengine *mydb,
     return r;
 }
 
-static int fetch(struct dbengine *mydb, 
+static int fetch(struct dbengine *mydb,
 		 const char *key, size_t keylen,
 		 const char **data, size_t *datalen,
 		 struct txn **mytid)
@@ -542,7 +543,7 @@ static int fetch(struct dbengine *mydb,
     return myfetch(mydb, key, keylen, data, datalen, mytid, 0);
 }
 
-static int fetchlock(struct dbengine *mydb, 
+static int fetchlock(struct dbengine *mydb,
 		     const char *key, size_t keylen,
 		     const char **data, size_t *datalen,
 		     struct txn **mytid)
@@ -576,7 +577,7 @@ static int fetchlock(struct dbengine *mydb,
 static int foreach(struct dbengine *mydb,
 		   const char *prefix, size_t prefixlen,
 		   foreach_p *goodp,
-		   foreach_cb *cb, void *rock, 
+		   foreach_cb *cb, void *rock,
 		   struct txn **mytid)
 {
     int r = 0;
@@ -617,7 +618,7 @@ static int foreach(struct dbengine *mydb,
 	prefixlen = 0;
     }
     if (!tid && r == DB_LOCK_DEADLOCK) goto restart;
-	
+
     /* iterate over all mailboxes matching prefix */
     while (!r) {
 	/* does this match our prefix? */
@@ -628,7 +629,7 @@ static int foreach(struct dbengine *mydb,
 	if (!goodp || goodp(rock, k.data, k.size, DATA(&d), DATALEN(&d))) {
 	    /* we have a winner! */
 
-	    /* close the cursor, so we're not holding locks 
+	    /* close the cursor, so we're not holding locks
 	       during a callback */
 	    CLOSECURSOR(); cursor = NULL;
 
@@ -645,7 +646,7 @@ static int foreach(struct dbengine *mydb,
 
 	    /* restore the current location & advance */
 	    OPENCURSOR();
-	    
+
 	    r = cursor->c_get(cursor, &k, &d, DB_SET);
 	    switch (r) {
 	    case 0:
@@ -710,7 +711,7 @@ static int foreach(struct dbengine *mydb,
 	break;
     default:
 	if (mytid) {
-	    abort_txn(mydb, *mytid); 
+	    abort_txn(mydb, *mytid);
 	    *mytid = NULL;
 	}
 	syslog(LOG_ERR, "DBERROR: error advancing: %s",  db_strerror(r));
@@ -724,7 +725,7 @@ static int foreach(struct dbengine *mydb,
     return r;
 }
 
-static int mystore(struct dbengine *mydb, 
+static int mystore(struct dbengine *mydb,
 		   const char *key, size_t keylen,
 		   const char *data, size_t datalen,
 		   struct txn **mytid, int putflags, int txnflags)
@@ -755,7 +756,7 @@ static int mystore(struct dbengine *mydb,
     restart:
 	r = txn_begin(dbenv, NULL, &tid, 0);
 	if (r != 0) {
-	    syslog(LOG_ERR, "DBERROR: mystore: error beginning txn: %s", 
+	    syslog(LOG_ERR, "DBERROR: mystore: error beginning txn: %s",
 		   db_strerror(r));
 	    return CYRUSDB_IOERROR;
 	}
@@ -774,7 +775,7 @@ static int mystore(struct dbengine *mydb,
 		       (unsigned long) txn_id(tid));
 	    r2 = txn_abort(tid);
 	    if (r2) {
-		syslog(LOG_ERR, "DBERROR: mystore: error aborting txn: %s", 
+		syslog(LOG_ERR, "DBERROR: mystore: error aborting txn: %s",
 		       db_strerror(r));
 		return CYRUSDB_IOERROR;
 	    }
@@ -807,7 +808,7 @@ static int mystore(struct dbengine *mydb,
     return r;
 }
 
-static int create(struct dbengine *db, 
+static int create(struct dbengine *db,
 		  const char *key, size_t keylen,
 		  const char *data, size_t datalen,
 		  struct txn **tid)
@@ -815,7 +816,7 @@ static int create(struct dbengine *db,
     return mystore(db, key, keylen, data, datalen, tid, DB_NOOVERWRITE, 0);
 }
 
-static int store(struct dbengine *db, 
+static int store(struct dbengine *db,
 		 const char *key, size_t keylen,
 		 const char *data, size_t datalen,
 		 struct txn **tid)
@@ -823,7 +824,7 @@ static int store(struct dbengine *db,
     return mystore(db, key, keylen, data, datalen, tid, 0, 0);
 }
 
-static int create_nosync(struct dbengine *db, 
+static int create_nosync(struct dbengine *db,
 			 const char *key, size_t keylen,
 			 const char *data, size_t datalen,
 			 struct txn **tid)
@@ -832,7 +833,7 @@ static int create_nosync(struct dbengine *db,
 		   DB_TXN_NOSYNC);
 }
 
-static int store_nosync(struct dbengine *db, 
+static int store_nosync(struct dbengine *db,
 			const char *key, size_t keylen,
 			const char *data, size_t datalen,
 			struct txn **tid)
@@ -840,7 +841,7 @@ static int store_nosync(struct dbengine *db,
     return mystore(db, key, keylen, data, datalen, tid, 0, DB_TXN_NOSYNC);
 }
 
-static int mydelete(struct dbengine *mydb, 
+static int mydelete(struct dbengine *mydb,
 		    const char *key, size_t keylen,
 		    struct txn **mytid, int txnflags, int force)
 {
@@ -865,7 +866,7 @@ static int mydelete(struct dbengine *mydb,
 	/* start txn for the write */
 	r = txn_begin(dbenv, NULL, &tid, 0);
 	if (r != 0) {
-	    syslog(LOG_ERR, "DBERROR: mydelete: error beginning txn: %s", 
+	    syslog(LOG_ERR, "DBERROR: mydelete: error beginning txn: %s",
 		   db_strerror(r));
 	    return CYRUSDB_IOERROR;
 	}
@@ -874,7 +875,7 @@ static int mydelete(struct dbengine *mydb,
 		   (unsigned long) txn_id(tid));
     }
     r = db->del(db, tid, &k, 0);
-    if (force && r == DB_NOTFOUND) 
+    if (force && r == DB_NOTFOUND)
 	r = CYRUSDB_OK;  /* ignore not found errors */
     if (!mytid) {
 	/* finish txn for the write */
@@ -885,7 +886,7 @@ static int mydelete(struct dbengine *mydb,
 		       (unsigned long) txn_id(tid));
 	    r2 = txn_abort(tid);
 	    if (r2) {
-		syslog(LOG_ERR, "DBERROR: mydelete: error aborting txn: %s", 
+		syslog(LOG_ERR, "DBERROR: mydelete: error aborting txn: %s",
 		       db_strerror(r));
 		return CYRUSDB_IOERROR;
 	    }
@@ -918,14 +919,14 @@ static int mydelete(struct dbengine *mydb,
     return r;
 }
 
-static int delete(struct dbengine *db, 
+static int delete(struct dbengine *db,
 		  const char *key, size_t keylen,
 		  struct txn **tid, int force)
 {
     return mydelete(db, key, keylen, tid, 0, force);
 }
 
-static int delete_nosync(struct dbengine *db, 
+static int delete_nosync(struct dbengine *db,
 			 const char *key, size_t keylen,
 			 struct txn **tid, int force)
 {
@@ -1040,7 +1041,7 @@ HIDDEN struct cyrusdb_backend cyrusdb_berkeley =
 
     &commit_txn,
     &abort_txn,
-    
+
     NULL,
     NULL,
     NULL,
@@ -1100,7 +1101,7 @@ HIDDEN struct cyrusdb_backend cyrusdb_berkeley_hash =
 
     &commit_txn,
     &abort_txn,
-    
+
     NULL,
     NULL,
     NULL,

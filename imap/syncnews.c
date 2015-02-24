@@ -82,7 +82,7 @@ static void usage(void)
 {
     fprintf(stderr, "usage: syncnews [-C <alt_config>] active\n");
     exit(EC_USAGE);
-}    
+}
 
 int main(int argc, char **argv)
 {
@@ -175,10 +175,11 @@ void readactive(char *active)
 	    }
 
 	    if (newsprefixlen) {
-		group[group_num] = xmalloc(strlen(buf)+newsprefixlen+2);
-		strcpy(group[group_num], newsprefix);
+	    	size_t size = strlen(buf)+newsprefixlen+2;
+		group[group_num] = xmalloc(size);
+		(void) strlcpy(group[group_num], newsprefix, size);
 		group[group_num][newsprefixlen] = '.';
-		strcpy(group[group_num]+newsprefixlen+1, buf);
+		(void) strlcpy(group[group_num]+newsprefixlen+1, buf, size);
 	    }
 	    else {
 		group[group_num] = xstrdup(buf);
@@ -211,7 +212,7 @@ void readactive(char *active)
     syslog(LOG_ERR, "bad line %d in active file", lineno);
     cyrus_done();
     exit(EC_DATAERR);
-    
+
 }
 
 /*

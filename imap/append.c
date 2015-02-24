@@ -251,7 +251,7 @@ static void append_free(struct appendstate *as)
 EXPORTED int append_commit(struct appendstate *as)
 {
     int r = 0;
-    
+
     if (as->s == APPEND_DONE) return 0;
 
     if (as->nummsg) {
@@ -338,9 +338,9 @@ EXPORTED FILE *append_newstage(const char *mailboxname, time_t internaldate,
 		   stagedir);
 	    f = fopen(stagefile, "w+");
 	}
-    } 
+    }
     if (!f) {
-	syslog(LOG_ERR, "IOERROR: creating message file %s: %m", 
+	syslog(LOG_ERR, "IOERROR: creating message file %s: %m",
 	       stagefile);
 	strarray_fini(&stage->parts);
 	free(stage);
@@ -443,7 +443,7 @@ static int callout_run_socket(const char *callout,
 
     memset(&mysun, 0, sizeof(mysun));
     mysun.sun_family = AF_UNIX;
-    strncpy(mysun.sun_path, callout, sizeof(mysun.sun_path));
+    STRLCPY_LOG(mysun.sun_path, callout, sizeof(mysun.sun_path));
     r = connect(sock, (struct sockaddr *)&mysun, sizeof(mysun));
     if (r < 0) {
 	syslog(LOG_ERR, "cannot connect socket for callout: %m");
@@ -909,7 +909,7 @@ EXPORTED int append_fromstage(struct appendstate *as, struct body **body,
 	if (r) {
 	    /* oh well, we tried */
 
-	    syslog(LOG_ERR, "IOERROR: creating message file %s: %m", 
+	    syslog(LOG_ERR, "IOERROR: creating message file %s: %m",
 		   stagefile);
 	    unlink(stagefile);
 	    return r;
@@ -1046,7 +1046,7 @@ EXPORTED int append_removestage(struct stagemsg *stage)
  * user wants to set in the message.  If the '\Seen' flag is
  * in 'flags', then the 'userid' passed to append_setup controls whose
  * \Seen flag gets set.
- * 
+ *
  * The message is not committed to the mailbox (nor is the mailbox
  * unlocked) until append_commit() is called.  multiple
  * append_onefromstream()s can be aborted by calling append_abort().
@@ -1118,7 +1118,7 @@ out:
 	append_abort(as);
 	return r;
     }
-    
+
     /* finish filling the event notification */
     /* XXX avoid to parse ENVELOPE record since Message-Id is already
      * present in body structure */
@@ -1223,11 +1223,11 @@ out:
  * mailbox 'mailbox' listed in the array pointed to by 'copymsg'.
  * 'as' must have been opened with append_setup().  If the '\Seen'
  * flag is to be set anywhere then 'userid' passed to append_setup()
- * contains the name of the user whose \Seen flag gets set.  
+ * contains the name of the user whose \Seen flag gets set.
  */
 EXPORTED int append_copy(struct mailbox *mailbox,
 		struct appendstate *as,
-		int nummsg, 
+		int nummsg,
 		struct copymsg *copymsg,
 		int nolink)
 {
@@ -1238,7 +1238,7 @@ EXPORTED int append_copy(struct mailbox *mailbox,
     int flag, userflag;
     annotate_state_t *astate = NULL;
     struct mboxevent *mboxevent = NULL;
-    
+
     if (!nummsg) {
 	append_abort(as);
 	return 0;
@@ -1266,7 +1266,7 @@ EXPORTED int append_copy(struct mailbox *mailbox,
 	      copymsg[msg].system_flags & ~FLAG_DELETED;
 
 	    for (flag = 0; copymsg[msg].flag[flag]; flag++) {
-		r = mailbox_user_flag(as->mailbox, 
+		r = mailbox_user_flag(as->mailbox,
 				      copymsg[msg].flag[flag], &userflag, 1);
 		if (r) goto out;
 		record.user_flags[userflag/32] |= 1<<(userflag&31);

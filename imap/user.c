@@ -148,13 +148,13 @@ EXPORTED const char *user_sieve_path(const char *user)
     return sieve_path;
 }
 
-static int user_deletesieve(const char *user) 
+static int user_deletesieve(const char *user)
 {
     const char *sieve_path;
     char filename[2048];
     DIR *mbdir;
     struct dirent *next = NULL;
-    
+
     /* oh well */
     if(config_getswitch(IMAPOPT_SIEVEUSEHOMEDIR)) return 0;
 
@@ -172,7 +172,7 @@ static int user_deletesieve(const char *user)
 
 	    unlink(filename);
 	}
-	
+
 	closedir(mbdir);
 
 	/* remove mbdir */
@@ -251,10 +251,10 @@ static int user_renamesieve(char *olduser, char *newuser)
     char hash, *domain;
     char oldpath[2048], newpath[2048];
     int r;
-    
+
     /* oh well */
     if(config_getswitch(IMAPOPT_SIEVEUSEHOMEDIR)) return 0;
-    
+
     if (config_virtdomains && (domain = strchr(olduser, '@'))) {
 	char d = (char) dir_hash_c(domain+1, config_fulldirhash);
 	*domain = '\0';  /* split user@domain */
@@ -357,7 +357,7 @@ EXPORTED int user_renamedata(char *olduser, char *newuser,
 
     if (!r) {
 	/* copy/rename subscriptions - we're using the internal names here */
-	strcpy(pat, "*");
+	(void) strcpy(pat, "*");
 	mboxlist_findsub(NULL, pat, 1, olduser, authstate, user_renamesub,
 			 &rrock, 1);
     }
@@ -366,7 +366,7 @@ EXPORTED int user_renamedata(char *olduser, char *newuser,
 	/* move sieve scripts */
 	user_renamesieve(olduser, newuser);
     }
-    
+
     return r;
 }
 
@@ -447,7 +447,7 @@ static int find_cb(void *rockp __attribute__((unused)),
 
     root = xstrndup(key, keylen);
     r = quota_deleteroot(root);
-    free(root); 
+    free(root);
 
     return r;
 }
