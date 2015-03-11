@@ -297,7 +297,7 @@ EXPORTED int URLtoMailbox(char *dst, const char *src)
  *  dst can be the same location as src,
  *  since the decoded length will be shorter than the encoded length
  */
-static int decode_url(char *dst, char *src)
+static int decode_url(char *dst, const char *src)
 {
     unsigned char c;
 
@@ -351,8 +351,8 @@ EXPORTED int imapurl_fromURL(struct imapurl *url, const char *s)
 
 	    if (at) {
 		*at = '\0';
+		r = decode_url(src, src);
 		url->user = src;
-		r = decode_url((char *) url->user, (char *) url->user);
 		if (r) return r;
 		src = at + 1;
 	    }

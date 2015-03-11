@@ -1608,12 +1608,13 @@ static void cmdloop(void)
 		prot_printf(imapd_out, "%s OK %s\r\n", tag.s,
 			    error_message(IMAP_OK_COMPLETED));
 
-		// Translate the name to external
-		if (imapd_userid != NULL) {
-			mboxname_hiersep_toexternal(&imapd_namespace, imapd_userid, config_virtdomains ? strcspn(imapd_userid, "@") : 0);
-			telemetry_rusage(imapd_userid);
-			mboxname_hiersep_tointernal(&imapd_namespace, imapd_userid, config_virtdomains ? strcspn(imapd_userid, "@") : 0);
+		if (imapd_userid && *imapd_userid) {
+		    // Translate the name to external
+		    mboxname_hiersep_toexternal(&imapd_namespace, imapd_userid, config_virtdomains ? strcspn(imapd_userid, "@") : 0);
+	  	    telemetry_rusage(imapd_userid);
+		    mboxname_hiersep_tointernal(&imapd_namespace, imapd_userid, config_virtdomains ? strcspn(imapd_userid, "@") : 0);
 		}
+
 		return;
 	    }
 	    else if (!imapd_userid) goto nologin;
@@ -5683,10 +5684,6 @@ localcreate:
 	prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(r));
 	goto done;
 
-    } else { // (r)
-	prot_printf(imapd_out, "%s OK %s\r\n", tag, error_message(IMAP_OK_COMPLETED));
-	goto done;
-
     } // (r)
 #endif // USE_AUTOCREATE
 
@@ -6040,12 +6037,7 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
 
     r = mlookup(NULL, NULL, oldmailboxname, &mbentry);
 
-    if (r) {
-	prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(r));
-	goto done;
-    }
-
-    if (mbentry->mbtype & MBTYPE_REMOTE) {
+    if (!r && mbentry->mbtype & MBTYPE_REMOTE) {
 	/* remote mailbox */
 	struct backend *s = NULL;
 	int res;
@@ -8742,14 +8734,6 @@ static void cmd_getmetadata(const char *tag)
     while (nlists < 3)
     {
 	c = parse_metadata_string_or_list(tag, &lists[nlists], &is_list[nlists]);
-	if (c == EOF) {
-	    // Note we have not yet incremented nlists, this should read as
-	    // "not yet two 'lists'", the minimum set of arguments.
-	    if (nlists < 1) {
-		goto missingargs;
-	    }
-	}
-
 	nlists++;
 	if (c == '\r' || c == EOF)
 	    break;
@@ -8806,7 +8790,7 @@ static void cmd_getmetadata(const char *tag)
     if (nlists == 2) {
 	/* no options */
 	mboxes = &lists[0];
-	mbox_is_pattern = is_list[0];
+	mbox_is_pattern = !is_list[0];
     }
     if (nlists == 3) {
 	/* options, either before or after */

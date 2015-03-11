@@ -140,13 +140,18 @@ struct index_record {
     uint32_t cache_version;
     struct message_guid guid;
     modseq_t modseq;
-    bit64 cid;
+    bit64 thrid;
     bit32 cache_crc;
 
     /* metadata */
     uint32_t recno;
     int silent;
     struct cacherecord crec;
+};
+
+struct synccrcs {
+    uint32_t basic;
+    uint32_t annot;
 };
 
 struct index_header {
@@ -179,8 +184,7 @@ struct index_header {
     time_t last_repack_time;
 
     bit32 header_file_crc;
-    bit32 sync_crc;
-    bit32 sync_crc_vers;
+    struct synccrcs synccrcs;
 
     uint32_t recentuid;
     time_t recenttime;
@@ -265,16 +269,16 @@ struct mailbox {
 #define OFFSET_FIRST_EXPUNGED 88   /* last_updated of oldest expunged message */
 #define OFFSET_LAST_REPACK_TIME 92 /* time of last expunged cleanup  */
 #define OFFSET_HEADER_FILE_CRC 96  /* CRC32 of the index header file */
-#define OFFSET_SYNC_CRC 100        /* XOR of SYNC CRCs of unexpunged records */
+#define OFFSET_SYNCCRCS_BASIC 100  /* XOR of SYNC CRCs of unexpunged records */
 #define OFFSET_RECENTUID 104       /* last UID the owner was told about */
 #define OFFSET_RECENTTIME 108      /* last timestamp for seen data */
 #define OFFSET_POP3_SHOW_AFTER 112 /* time after which to show messages
 				    * to POP3 */
-#define OFFSET_QUOTA_ANNOT_USED 116 /* bytes of per-mailbox and per-message 
+#define OFFSET_QUOTA_ANNOT_USED 116 /* bytes of per-mailbox and per-message
 				     * annotations for this mailbox */
 			  /* Spares - only use these if the index */
 			  /*  record size remains the same */
-#define OFFSET_SYNC_CRC_VERS 120 /* version of algorithm used for SYNC_CRC field */
+#define OFFSET_SYNCCRCS_ANNOT 120 /* SYNC_CRC of the annotations */
 #define OFFSET_HEADER_CRC 124 /* includes all zero for the spares! */
 /* NEXT UPDATE - add Bug #3562 "TOTAL_MAILBOX_USED" field, 64 bit
  * value which counts the total size of all files included expunged
@@ -300,7 +304,7 @@ struct mailbox {
 #define OFFSET_CACHE_VERSION 56
 #define OFFSET_MESSAGE_GUID 60
 #define OFFSET_MODSEQ 80 /* CONDSTORE (64-bit modseq) */
-#define OFFSET_CID 88       /* conversation id, added in v13 */
+#define OFFSET_THRID 88       /* conversation id, added in v13 */
 #define OFFSET_CACHE_CRC 96 /* CRC32 of cache record */
 #define OFFSET_RECORD_CRC 100
 
@@ -432,12 +436,7 @@ extern char *mailbox_message_fname(struct mailbox *mailbox,
 extern char *mailbox_datapath(struct mailbox *mailbox);
 
 /* map individual messages in */
-extern int mailbox_map_message(struct mailbox *mailbox, unsigned long uid,
-				  const char **basep, size_t *lenp);
 extern int mailbox_map_record(struct mailbox *mailbox, struct index_record *record, struct buf *buf);
-extern void mailbox_unmap_message(struct mailbox *mailbox,
-				  unsigned long uid,
-				  const char **basep, size_t *lenp);
 
 /* cache record API */
 int mailbox_ensure_cache(struct mailbox *mailbox, size_t len);
@@ -532,9 +531,6 @@ extern void mailbox_make_uniqueid(struct mailbox *mailbox);
 extern int mailbox_setversion(struct mailbox *mailbox, int version);
 /* for upgrade index */
 
-#define MAILBOX_CRC_VERSION_MIN		1
-#define MAILBOX_CRC_VERSION_MAX		2
-
 extern int mailbox_index_recalc(struct mailbox *mailbox);
 
 #define mailbox_quota_check(mailbox, delta) \
@@ -552,7 +548,7 @@ extern int mailbox_get_annotate_state(struct mailbox *mailbox,
 				      unsigned int uid,
 				      struct annotate_state **statep);
 
-uint32_t mailbox_sync_crc(struct mailbox *mailbox, unsigned vers, int recalc);
+struct synccrcs mailbox_synccrcs(struct mailbox *mailbox, int recalc);
 unsigned mailbox_best_crcvers(unsigned minvers, unsigned maxvers);
 
 extern int mailbox_add_dav(struct mailbox *mailbox);

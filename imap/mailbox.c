@@ -762,18 +762,15 @@ EXPORTED void mailbox_make_uniqueid(struct mailbox *mailbox)
     mailbox->header_dirty = 1;
 }
 
-/*
- * Maps in the content for the message with UID 'uid' in 'mailbox'.
- * Returns map in 'basep' and 'lenp'
- */
-EXPORTED int mailbox_map_message(struct mailbox *mailbox, unsigned long uid,
-			const char **basep, size_t *lenp)
+EXPORTED int mailbox_map_record(struct mailbox *mailbox, struct index_record *record, struct buf *buf)
 {
+    const char *data = NULL;
+    size_t len = 0;
     int msgfd;
-    char *fname;
+    const char *fname;
     struct stat sbuf;
 
-    fname = mailbox_message_fname(mailbox, uid);
+    fname = mailbox_message_fname(mailbox, record->uid);
 
     msgfd = open(fname, O_RDONLY, 0666);
     if (msgfd == -1) return errno;
@@ -782,33 +779,11 @@ EXPORTED int mailbox_map_message(struct mailbox *mailbox, unsigned long uid,
 	syslog(LOG_ERR, "IOERROR: fstat on %s: %m", fname);
 	fatal("can't fstat message file", EC_OSFILE);
     }
-    *basep = 0;
-    *lenp = 0;
-    map_refresh(msgfd, 1, basep, lenp, sbuf.st_size, fname, mailbox->name);
+    map_refresh(msgfd, 1, &data, &len, sbuf.st_size, fname, mailbox->name);
     close(msgfd);
-
-    return 0;
-}
-
-EXPORTED int mailbox_map_record(struct mailbox *mailbox, struct index_record *record, struct buf *buf)
-{
-    const char *data;
-    size_t len;
-    int r = mailbox_map_message(mailbox, record->uid, &data, &len);
-    if (r) return r;
 
     buf_init_mmap(buf, data, len);
     return 0;
-}
-
-/*
- * Releases the buffer obtained from mailbox_map_message()
- */
-EXPORTED void mailbox_unmap_message(struct mailbox *mailbox __attribute__((unused)),
-			   unsigned long uid __attribute__((unused)),
-			   const char **basep, size_t *lenp)
-{
-    map_free(basep, lenp);
 }
 
 static void mailbox_release_resources(struct mailbox *mailbox)
@@ -1036,6 +1011,13 @@ EXPORTED int mailbox_setversion(struct mailbox *mailbox, int version)
 	 * NONEXISTENT */
 	if (!r) r = mailbox_lock_index_internal(mailbox, LOCK_EXCLUSIVE);
 	if (!r) r = mailbox_index_repack(mailbox, version);
+
+	/* and let's just update the counts too */
+	mailbox_unlock_index(mailbox, NULL);
+	if (!r) r = mailbox_mboxlock_reopen(listitem, LOCK_EXCLUSIVE);
+	if (!r) r = mailbox_open_index(mailbox);
+	if (!r) r = mailbox_lock_index_internal(mailbox, LOCK_EXCLUSIVE);
+	if (!r) r = mailbox_index_recalc(mailbox);
     }
 
     return r;
@@ -1287,7 +1269,8 @@ EXPORTED int mailbox_set_quotaroot(struct mailbox *mailbox, const char *quotaroo
     return 0;
 }
 
-/* find or create a user flag - dirty header if change needed */
+/* find or create a user flag - dirty header if change needed.  If 'create'
+ * is 1, then only 100 flags may be created.  If >1, then you can use all 128 */
 EXPORTED int mailbox_user_flag(struct mailbox *mailbox, const char *flag,
 		      int *flagnum, int create)
 {
@@ -1312,6 +1295,10 @@ EXPORTED int mailbox_user_flag(struct mailbox *mailbox, const char *flag,
 	    return IMAP_NOTFOUND;
 
 	if (emptyflag == -1)
+	    return IMAP_USERFLAG_EXHAUSTED;
+
+	/* stop imapd exhausting flags */
+	if (emptyflag >= 100 && create == 1)
 	    return IMAP_USERFLAG_EXHAUSTED;
 
 	/* need to be index locked to make flag changes */
@@ -1442,7 +1429,7 @@ static int mailbox_buf_to_index_header(const char *buf, size_t len,
     i->first_expunged = ntohl(*((bit32 *)(buf+OFFSET_FIRST_EXPUNGED)));
     i->last_repack_time = ntohl(*((bit32 *)(buf+OFFSET_LAST_REPACK_TIME)));
     i->header_file_crc = ntohl(*((bit32 *)(buf+OFFSET_HEADER_FILE_CRC)));
-    i->sync_crc = ntohl(*((bit32 *)(buf+OFFSET_SYNC_CRC)));
+    i->synccrcs.basic = ntohl(*((bit32 *)(buf+OFFSET_SYNCCRCS_BASIC)));
     i->recentuid = ntohl(*((bit32 *)(buf+OFFSET_RECENTUID)));
     i->recenttime = ntohl(*((bit32 *)(buf+OFFSET_RECENTTIME)));
 
@@ -1452,7 +1439,7 @@ static int mailbox_buf_to_index_header(const char *buf, size_t len,
 	/* this field is stored as a 32b unsigned on disk but 64b signed
 	 * in memory, so we need to be careful about sign extension */
 	i->quota_annot_used = (quota_t)((unsigned long long)qannot);
-	i->sync_crc_vers = ntohl(*((bit32 *)(buf+OFFSET_SYNC_CRC_VERS)));
+	i->synccrcs.annot = ntohl(*((bit32 *)(buf+OFFSET_SYNCCRCS_ANNOT)));
     }
 
     crc = ntohl(*((bit32 *)(buf+OFFSET_HEADER_CRC)));
@@ -1579,7 +1566,7 @@ static int mailbox_buf_to_index_record(const char *buf,
     if (version < 12)
 	return 0;
 
-    /* CID got inserted before cache_crc32 in version 12 */
+    /* THRID got inserted before cache_crc32 in version 12 */
     if (version == 12) {
 	record->cache_crc = ntohl(*((bit32 *)(buf+88)));
 
@@ -1589,7 +1576,7 @@ static int mailbox_buf_to_index_record(const char *buf,
 	return 0;
     }
 
-    record->cid = ntohll(*(bit64 *)(buf+OFFSET_CID));
+    record->thrid = ntohll(*(bit64 *)(buf+OFFSET_THRID));
     record->cache_crc = ntohl(*((bit32 *)(buf+OFFSET_CACHE_CRC)));
 
     /* check CRC32 */
@@ -1916,15 +1903,11 @@ static bit32 mailbox_index_header_to_buf(struct index_header *i, unsigned char *
     *((bit32 *)(buf+OFFSET_MINOR_VERSION)) = htonl(i->minor_version);
     *((bit32 *)(buf+OFFSET_START_OFFSET)) = htonl(i->start_offset);
     *((bit32 *)(buf+OFFSET_RECORD_SIZE)) = htonl(i->record_size);
-    if (i->minor_version >= 12) {
-	*((bit32 *)(buf+OFFSET_NUM_RECORDS)) = htonl(i->num_records);
-    }
-    else {
-	/* this was moved to make upgrades clean, because num_records was
-	 * the same as exists back then, we didn't keep expunged in the
-	 * record */
-	*((bit32 *)(buf+OFFSET_NUM_RECORDS)) = htonl(i->exists);
-    }
+    /* this was moved to make upgrades clean, because num_records was
+     * the same as exists back then, we didn't keep expunged in the
+     * record - but we always have to write NUM_RECORDS so that expunged
+     * handing over repack works */
+    *((bit32 *)(buf+OFFSET_NUM_RECORDS)) = htonl(i->num_records);
     *((bit32 *)(buf+OFFSET_LAST_APPENDDATE)) = htonl(i->last_appenddate);
     *((bit32 *)(buf+OFFSET_LAST_UID)) = htonl(i->last_uid);
 
@@ -1958,7 +1941,7 @@ static bit32 mailbox_index_header_to_buf(struct index_header *i, unsigned char *
     *((bit32 *)(buf+OFFSET_FIRST_EXPUNGED)) = htonl(i->first_expunged);
     *((bit32 *)(buf+OFFSET_LAST_REPACK_TIME)) = htonl(i->last_repack_time);
     *((bit32 *)(buf+OFFSET_HEADER_FILE_CRC)) = htonl(i->header_file_crc);
-    *((bit32 *)(buf+OFFSET_SYNC_CRC)) = htonl(i->sync_crc);
+    *((bit32 *)(buf+OFFSET_SYNCCRCS_BASIC)) = htonl(i->synccrcs.basic);
     *((bit32 *)(buf+OFFSET_RECENTUID)) = htonl(i->recentuid);
     *((bit32 *)(buf+OFFSET_RECENTTIME)) = htonl(i->recenttime);
     if (i->minor_version > 12) {
@@ -1970,7 +1953,7 @@ static bit32 mailbox_index_header_to_buf(struct index_header *i, unsigned char *
 	* bytes stored in dbs and the dbs are 32b anyway there should
 	* be no problem */
 	*((bit32 *)(buf+OFFSET_QUOTA_ANNOT_USED)) = htonl((bit32)i->quota_annot_used);
-	*((bit32 *)(buf+OFFSET_SYNC_CRC_VERS)) = htonl(i->sync_crc_vers);
+	*((bit32 *)(buf+OFFSET_SYNCCRCS_ANNOT)) = htonl(i->synccrcs.annot);
     }
 
     /* Update checksum */
@@ -2126,7 +2109,7 @@ static bit32 mailbox_index_record_to_buf(struct index_record *record, int versio
 	return crc;
     }
 
-    *((bit64 *)(buf+OFFSET_CID)) = htonll(record->cid);
+    *((bit64 *)(buf+OFFSET_THRID)) = htonll(record->thrid);
     *((bit32 *)(buf+OFFSET_CACHE_CRC)) = htonl(record->cache_crc);
 
     /* calculate the checksum */
@@ -2181,24 +2164,16 @@ static void header_update_counts(struct index_header *i,
     }
 }
 
-/*************************** Sync CRC algorithms ***************************/
-
-typedef struct mailbox_crcalgo mailbox_crcalgo_t;
-struct mailbox_crcalgo {
-    unsigned version;
-    uint32_t (*record)(const struct mailbox *, const struct index_record *);
-    uint32_t (*annot)(unsigned int uid, const char *entry,
-		   const char *userid, const struct buf *value);
-};
+/*************************** Sync CRC ***************************/
 
 struct annot_calc_rock
 {
-    const mailbox_crcalgo_t *algo;
-    uint32_t crc;
+    uint32_t annot;
     quota_t used;
 };
 
-static uint32_t crc32_record(const struct mailbox *mailbox,
+/* this is the algorithm from version 2.4, it's locked in */
+static uint32_t crc_basic(const struct mailbox *mailbox,
 			  const struct index_record *record)
 {
     char buf[4096];
@@ -2243,178 +2218,35 @@ static uint32_t crc32_record(const struct mailbox *mailbox,
     return crc32_cstring(buf);
 }
 
-static int cmpcase(const void *a, const void *b)
+static uint32_t crc_annot(unsigned int uid, const char *entry,
+			  const char *userid, const struct buf *value)
 {
-    return strcasecmp(*(const char **)a, *(const char **)b);
+    struct buf buf = BUF_INITIALIZER;
+    uint32_t res = 0;
+
+    buf_printf(&buf, "%u %s %s ", uid, entry, userid ? userid : "");
+    buf_append(&buf, value);
+    res = crc32_buf(&buf);
+    buf_free(&buf);
+
+    return res;
 }
 
-static uint32_t md5_record(const struct mailbox *mailbox,
-			const struct index_record *record)
+static uint32_t crc_virtannot(struct mailbox *mailbox __attribute__((unused)),
+			      struct index_record *record)
 {
-    MD5_CTX ctx;
-    union {
-	uint32_t b32;
-	unsigned char md5[16];
-    } result;
-    unsigned int i;
-    unsigned int nflags = 0;
-    int n;
-    const char *flags[MAX_USER_FLAGS + /*system flags*/5];
-    char buf[256];
-    static struct buf flagbuf = BUF_INITIALIZER;
+    uint32_t crc = 0;
 
-    /* expunged flags have no sync CRC */
     if (record->system_flags & FLAG_EXPUNGED)
 	return 0;
 
-    MD5Init(&ctx);
-
-    /* system flags - already sorted lexically */
-    if (record->system_flags & FLAG_ANSWERED)
-	flags[nflags++] = "\\answered";
-    if (record->system_flags & FLAG_DELETED)
-	flags[nflags++] = "\\deleted";
-    if (record->system_flags & FLAG_DRAFT)
-	flags[nflags++] = "\\draft";
-    if (record->system_flags & FLAG_FLAGGED)
-	flags[nflags++] = "\\flagged";
-    if (record->system_flags & FLAG_SEEN)
-	flags[nflags++] = "\\seen";
-
-    /* user flags */
-    for (i = 0; i < MAX_USER_FLAGS; i++) {
-	if (!mailbox->flagname[i])
-	    continue;
-	if (!(record->user_flags[i/32] & (1<<(i&31))))
-	    continue;
-	flags[nflags++] = mailbox->flagname[i];
+    if (record->thrid) {
+	struct buf buf = BUF_INITIALIZER;
+	buf_printf(&buf, "%llx", record->thrid);
+	crc ^= crc_annot(record->uid, "/vendor/cmu/cyrus-imapd/thrid", NULL, &buf);
+	buf_free(&buf);
     }
-
-    /*
-     * There is a potential optimisation here: we only need to sort if
-     * there were any user flags because the system flags are added
-     * pre-sorted.  However, we expect never to achieve that in
-     * production, so we don't code it.
-     */
-    qsort(flags, nflags, sizeof(char *), cmpcase);
-
-    n = snprintf(buf, sizeof(buf), "%u", record->uid);
-    MD5Update(&ctx, buf, n);
-
-    MD5Update(&ctx, " ", 1);
-
-    n = snprintf(buf, sizeof(buf), "%llu", record->modseq);
-    MD5Update(&ctx, buf, n);
-
-    MD5Update(&ctx, " ", 1);
-
-    n = snprintf(buf, sizeof(buf), "%lu", record->last_updated);
-    MD5Update(&ctx, buf, n);
-
-    MD5Update(&ctx, " (", 2);
-
-    for (i = 0 ; i < nflags ; i++) {
-	if (i)
-	    MD5Update(&ctx, " ", 1);
-
-	buf_reset(&flagbuf);
-	buf_appendcstr(&flagbuf, flags[i]);
-	buf_cstring(&flagbuf);
-	lcase(flagbuf.s);
-	MD5Update(&ctx, flagbuf.s, flagbuf.len);
-    }
-
-    MD5Update(&ctx, ") ", 2);
-
-    n = snprintf(buf, sizeof(buf), "%lu", record->internaldate);
-    MD5Update(&ctx, buf, n);
-
-    MD5Update(&ctx, " ", 1);
-
-    MD5Update(&ctx, message_guid_encode(&record->guid), 2*MESSAGE_GUID_SIZE);
-
-    MD5Final(result.md5, &ctx);
-
-    return ntohl(result.b32);
-}
-
-static uint32_t md5_annot(unsigned int uid, const char *entry,
-		       const char *userid, const struct buf *value)
-{
-    MD5_CTX ctx;
-    union {
-	uint32_t b32;
-	unsigned char md5[16];
-    } result;
-    char buf[32];
-
-    MD5Init(&ctx);
-
-    snprintf(buf, sizeof(buf), "%u", uid);
-    MD5Update(&ctx, buf, strlen(buf));
-    MD5Update(&ctx, " ", 1);
-    MD5Update(&ctx, entry, strlen(entry));
-    MD5Update(&ctx, " ", 1);
-    if (userid)
-	MD5Update(&ctx, userid, strlen(userid));
-    MD5Update(&ctx, " ", 1);
-    MD5Update(&ctx, value->s, value->len);
-
-    MD5Final(result.md5, &ctx);
-
-    return ntohl(result.b32);
-}
-
-static const mailbox_crcalgo_t crcalgos[] = {
-    {
-	1,		    /* historical 2.4.x CRC algorithm */
-	crc32_record,
-	NULL },
-    {
-	2,		    /* XOR the first 16 bytes of md5s instead */
-	md5_record,
-	md5_annot },
-    { 0, NULL, NULL }
-};
-
-static const mailbox_crcalgo_t *mailbox_find_crcalgo(unsigned minvers, unsigned maxvers)
-{
-    const mailbox_crcalgo_t *alg;
-    const mailbox_crcalgo_t *best = NULL;
-
-    for (alg = crcalgos ; alg->version ; alg++) {
-	if (alg->version < minvers)
-	    continue;
-	if (alg->version > maxvers)
-	    continue;
-	if (best && best->version > alg->version)
-	    continue;
-	best = alg;
-    }
-    return best;
-}
-
-EXPORTED unsigned mailbox_best_crcvers(unsigned minvers, unsigned maxvers)
-{
-    const mailbox_crcalgo_t *alg = mailbox_find_crcalgo(minvers, maxvers);
-    if (!alg) return 0;
-    return alg->version;
-}
-
-static const mailbox_crcalgo_t *mailbox_get_crcalgo(struct mailbox *mailbox)
-{
-    const mailbox_crcalgo_t *alg = NULL;
-
-    if (mailbox->i.sync_crc_vers) {
-	alg = mailbox_find_crcalgo(mailbox->i.sync_crc_vers,
-				   mailbox->i.sync_crc_vers);
-	if (!alg && mailbox_index_islocked(mailbox, /*write*/1)) {
-	    mailbox->i.sync_crc_vers = 0;	/* invalidate the CRC version */
-	    mailbox_index_dirty(mailbox);
-	}
-    }
-
-    return alg;
+    return crc;
 }
 
 EXPORTED void mailbox_annot_changed(struct mailbox *mailbox,
@@ -2424,19 +2256,22 @@ EXPORTED void mailbox_annot_changed(struct mailbox *mailbox,
 			   const struct buf *oldval,
 			   const struct buf *newval)
 {
-    const mailbox_crcalgo_t *alg = mailbox_get_crcalgo(mailbox);
+    /* update sync_crc - NOTE, only per-message annotations count */
+    if (uid) {
+	/* check that the record isn't already expunged */
+	struct index_record record;
+	int r = mailbox_find_index_record(mailbox, uid, &record);
+	if (r || record.system_flags & FLAG_EXPUNGED)
+	    return;
+	if (oldval->len)
+	    mailbox->i.synccrcs.annot ^= crc_annot(uid, entry, userid, oldval);
+	if (newval->len)
+	    mailbox->i.synccrcs.annot ^= crc_annot(uid, entry, userid, newval);
+    }
 
     /* we are dirtying both index and quota */
     mailbox_index_dirty(mailbox);
     mailbox_quota_dirty(mailbox);
-
-    /* update sync_crc - NOTE, only per-message annotations count */
-    if (uid && alg && alg->annot) {
-	if (oldval->len)
-	    mailbox->i.sync_crc ^= alg->annot(uid, entry, userid, oldval);
-	if (newval->len)
-	    mailbox->i.sync_crc ^= alg->annot(uid, entry, userid, newval);
-    }
 
     /* corruption prevention - check we don't go negative */
     if (mailbox->i.quota_annot_used > (quota_t)oldval->len)
@@ -2457,8 +2292,8 @@ static int calc_one_annot(const char *mailbox __attribute__((unused)),
     struct annot_calc_rock *cr = (struct annot_calc_rock *)rock;
 
     /* update sync_crc - NOTE, only per-message annotations count */
-    if (uid && cr->algo && cr->algo->annot)
-	cr->crc ^= cr->algo->annot(uid, entry, userid, value);
+    if (uid)
+	cr->annot ^= crc_annot(uid, entry, userid, value);
 
     /* always count the size */
     cr->used += value->len;
@@ -2470,7 +2305,7 @@ static void mailbox_annot_update_counts(struct mailbox *mailbox,
 					struct index_record *record,
 					int is_add)
 {
-    struct annot_calc_rock cr = { mailbox_get_crcalgo(mailbox), 0, 0 };
+    struct annot_calc_rock cr = { 0, 0 };
 
     /* expunged records don't count */
     if (record && record->system_flags & FLAG_EXPUNGED) return;
@@ -2478,7 +2313,8 @@ static void mailbox_annot_update_counts(struct mailbox *mailbox,
     annotatemore_findall(mailbox->name, record ? record->uid : 0, /* all entries*/"*",
 			 calc_one_annot, &cr);
 
-    mailbox->i.sync_crc ^= cr.crc;
+    if (record)
+	mailbox->i.synccrcs.annot ^= cr.annot;
 
     if (is_add)
 	mailbox->i.quota_annot_used += cr.used;
@@ -2495,32 +2331,22 @@ static void mailbox_annot_update_counts(struct mailbox *mailbox,
  * Calculate a sync CRC for the entire @mailbox using CRC algorithm
  * version @vers, optionally forcing recalculation
  */
-EXPORTED uint32_t mailbox_sync_crc(struct mailbox *mailbox, unsigned vers, int force)
+EXPORTED struct synccrcs mailbox_synccrcs(struct mailbox *mailbox, int force)
 {
     annotate_state_t *astate = NULL;
-    const mailbox_crcalgo_t *alg;
     struct index_record record;
     uint32_t recno;
-    uint32_t crc = 0;
+    struct synccrcs crcs = { 0, 0 };
 
-    /* check if we can use the persistent incremental CRC */
-    if (vers == mailbox->i.sync_crc_vers && !force) {
-	return mailbox->i.sync_crc;
-    }
-    /* otherwise, we're on the slow path */
+    if (!force)
+	return mailbox->i.synccrcs;
 
-    /* find the algorithm */
-    alg = mailbox_find_crcalgo(vers, vers);
-    if (!alg) return 0;
+    /* hold annotations DB open - failure to load is an error */
+    if (mailbox_get_annotate_state(mailbox, ANNOTATE_ANY_UID, &astate))
+	return crcs;
 
-    if (alg->annot) {
-	/* hold annotations DB open - failure to load is an error */
-	if (mailbox_get_annotate_state(mailbox, ANNOTATE_ANY_UID, &astate))
-	    return 0;
-
-	/* and make sure it stays locked for the whole process */
-	annotate_state_begin(astate);
-    }
+    /* and make sure it stays locked for the whole process */
+    annotate_state_begin(astate);
 
     for (recno = 1; recno <= mailbox->i.num_records; recno++) {
 	/* we can't send bogus records, just skip them! */
@@ -2531,42 +2357,37 @@ EXPORTED uint32_t mailbox_sync_crc(struct mailbox *mailbox, unsigned vers, int f
 	if (record.system_flags & FLAG_EXPUNGED)
 	    continue;
 
-	if (alg->record)
-	    crc ^= alg->record(mailbox, &record);
+	crcs.basic ^= crc_basic(mailbox, &record);
+	crcs.annot ^= crc_virtannot(mailbox, &record);
 
-	if (alg->annot) {
-	    struct annot_calc_rock cr = { alg, 0, 0 };
-	    annotatemore_findall(mailbox->name, record.uid, /* all entries*/"*",
-				 calc_one_annot, &cr);
-	    crc ^= cr.crc;
-	}
+	struct annot_calc_rock cr = { 0, 0 };
+	annotatemore_findall(mailbox->name, record.uid, /* all entries*/"*",
+			     calc_one_annot, &cr);
+
+	crcs.annot ^= cr.annot;
     }
 
-    /* possibly upgrade the persistent CRC version */
+    /* possibly upgrade the stored value */
     if (mailbox_index_islocked(mailbox, /*write*/1)) {
-	mailbox->i.sync_crc = crc;
-	mailbox->i.sync_crc_vers = vers;
+	mailbox->i.synccrcs = crcs;
 	mailbox_index_dirty(mailbox);
     }
 
     /* return the newly calculated CRC */
-    return crc;
+    return crcs;
 }
 
 static void mailbox_index_update_counts(struct mailbox *mailbox,
 					struct index_record *record,
 					int is_add)
 {
-    const mailbox_crcalgo_t *alg = mailbox_get_crcalgo(mailbox);
-
     mailbox_quota_dirty(mailbox);
     mailbox_index_dirty(mailbox);
     header_update_counts(&mailbox->i, record, is_add);
 
-    if (alg && alg->record)
-	mailbox->i.sync_crc ^= alg->record(mailbox, record);
+    mailbox->i.synccrcs.basic ^= crc_basic(mailbox, record);
+    mailbox->i.synccrcs.annot ^= crc_virtannot(mailbox, record);
 }
-
 
 EXPORTED int mailbox_index_recalc(struct mailbox *mailbox)
 {
@@ -2587,7 +2408,8 @@ EXPORTED int mailbox_index_recalc(struct mailbox *mailbox)
     mailbox->i.exists = 0;
     mailbox->i.quota_mailbox_used = 0;
     mailbox->i.quota_annot_used = 0;
-    mailbox->i.sync_crc = 0;
+    mailbox->i.synccrcs.basic = 0;
+    mailbox->i.synccrcs.annot = 0;
 
     /* mailbox level annotations */
     mailbox_annot_update_counts(mailbox, NULL, 1);
@@ -3349,8 +3171,8 @@ static int mailbox_repack_commit(struct mailbox_repack **repackptr)
 
     repack->i.last_repack_time = time(0);
 
-    assert(repack->i.sync_crc_vers == repack->mailbox->i.sync_crc_vers);
-    assert(repack->i.sync_crc == repack->mailbox->i.sync_crc);
+    assert(repack->i.synccrcs.basic == repack->mailbox->i.synccrcs.basic);
+    assert(repack->i.synccrcs.annot == repack->mailbox->i.synccrcs.annot);
 
     if (repack->old_version >= 12 && repack->i.minor_version < 12
 	&& repack->seqset && repack->userid) {
@@ -3800,7 +3622,6 @@ EXPORTED int mailbox_create(const char *name,
     mailbox->i.uidvalidity = uidvalidity;
     mailbox->i.options = options;
     mailbox->i.highestmodseq = 1;
-    mailbox->i.sync_crc_vers = MAILBOX_CRC_VERSION_MAX;
 
     /* initialise header size field so appends calculate the
      * correct map size */
@@ -4459,8 +4280,7 @@ static void cleanup_stale_expunged(struct mailbox *mailbox)
     for (erecno = 1; erecno <= expunge_num; erecno++) {
 	bufp = expunge_base + eoffset + (erecno-1)*expungerecord_size;
 	uid = ntohl(*((bit32 *)(bufp+OFFSET_UID)));
-	fname = mailbox_message_fname(mailbox, uid);
-	unlink(fname);
+	mailbox_message_unlink(mailbox, uid);
     }
 
     fname = mailbox_meta_fname(mailbox, META_EXPUNGE);
@@ -4974,20 +4794,20 @@ static void reconstruct_compare_headers(struct mailbox *mailbox,
 	       mailbox->name, old->exists, new->exists);
     }
 
-    if (old->sync_crc_vers != new->sync_crc_vers) {
-	syslog(LOG_ERR, "%s: updating sync_crc_vers %u => %u",
-	       mailbox->name, old->sync_crc_vers, new->sync_crc_vers);
-	printf("%s: updating sync_crc_vers %u => %u\n",
-	       mailbox->name, old->sync_crc_vers, new->sync_crc_vers);
-    }
-    else if (old->sync_crc != new->sync_crc) {
-	/* note that the sync_crc can't be compared if the
-	 * algorithm versions are different */
+    if (old->synccrcs.basic != new->synccrcs.basic) {
 	syslog(LOG_ERR, "%s: updating sync_crc %u => %u",
-	       mailbox->name, old->sync_crc, new->sync_crc);
+	       mailbox->name, old->synccrcs.basic, new->synccrcs.basic);
 	printf("%s: updating sync_crc %u => %u\n",
-	       mailbox->name, old->sync_crc, new->sync_crc);
+	       mailbox->name, old->synccrcs.basic, new->synccrcs.basic);
     }
+
+    if (old->synccrcs.annot != new->synccrcs.annot) {
+	syslog(LOG_ERR, "%s: updating sync_crc_annot %u => %u",
+	       mailbox->name, old->synccrcs.annot, new->synccrcs.annot);
+	printf("%s: updating sync_crc_annot %u => %u\n",
+	       mailbox->name, old->synccrcs.annot, new->synccrcs.annot);
+    }
+
 }
 
 static int mailbox_wipe_index_record(struct mailbox *mailbox,

@@ -44,7 +44,7 @@ dnl configure.ac for the Cyrus imapd
 dnl
 
 
-AC_INIT([cyrus-imapd], [2.5], [http://bugzilla.cyrusimap.org],,[http://www.cyrusimap.org])
+AC_INIT([cyrus-imapd], [3.0], [http://bugzilla.cyrusimap.org],,[http://www.cyrusimap.org])
 AC_PREREQ([2.63])
 AC_CONFIG_SRCDIR([imap/imapd.c])
 AC_CONFIG_HEADERS(config.h)
@@ -106,6 +106,35 @@ esac
 
 AM_INIT_AUTOMAKE([-Wall -Werror -Wno-portability foreign dist-bzip2 no-installinfo subdir-objects])
 AC_CONFIG_LIBOBJ_DIR([lib])
+
+dnl if the git repository is here we also have git
+if test -d ".git/"; then
+    git_bin=$(which git 2>/dev/null)
+    if test "x$git_bin" != "x"; then
+        if test -x "/$(which git 2>/dev/null)"; then
+            git_branch=$(git branch -l | grep ^* | sed -e 's/* //g')
+
+            case "$git_branch" in
+                cyrus-imapd-*)
+                        git_tag=$(git tag -l | grep -E "$git_branch\." | sort --version-sort | tail -n 1)
+                        git_revs=$(git log $git_tag..HEAD --pretty=oneline 2>/dev/null | wc -l)
+                        if test "x$git_revs" != "x0"; then
+                            git_version=".$git_revs"
+                        fi
+                    ;;
+
+                master)
+                        git_revs=$(git log 777a1b46..HEAD --pretty=oneline | wc -l)
+                        git_version="-dev$git_revs"
+                    ;;
+
+            esac
+        fi
+    fi
+fi
+
+AC_SUBST(git_version)
+
 dnl Useful hook for distributions
 AC_ARG_WITH(extraident,
         [AS_HELP_STRING([--with-extraident=STRING],[use STRING as extra version information])],
@@ -127,9 +156,18 @@ AC_SUBST(COV_LDFLAGS)
 AC_ARG_WITH(login,,AC_MSG_ERROR([--with-login is no longer supported.
 Configure SASL appropriately instead.]))
 
+dnl We need to derive default values for --with-cyrus-prefix and
+dnl --with-service-path based on $prefix, but $prefix may currently
+dnl be set to "NONE" for autoconf reasons, so work around that.
+if test "x$prefix" = "xNONE"; then
+    myprefix="$ac_default_prefix"
+else
+    myprefix="$prefix"
+fi
+
 AC_ARG_WITH(cyrus-prefix,
 	[AS_HELP_STRING([--with-cyrus-prefix=DIR], [use DIR as cyrus server install directory [PREFIX/cyrus]])],
-	cyrus_prefix="$withval",cyrus_prefix="$prefix/cyrus")
+	cyrus_prefix="$withval",cyrus_prefix="$myprefix/cyrus")
 AC_DEFINE_UNQUOTED(CYRUS_PATH,"$cyrus_prefix",[Where will we be installed?])
 AC_ARG_WITH(service-path,
 	[AS_HELP_STRING([--with-service-path=DIR], [use DIR as service install directory [CYRUSPREFIX/bin]])],
@@ -198,9 +236,6 @@ if test "$ac_cv_sizeof_long_long_int" -eq 8 -a \
 else
   AC_MSG_ERROR(The Cyrus IMAPD requires support for long long int)
 fi
-
-CMU_C___ATTRIBUTE__
-CMU_C_FPIC
 
 dnl check for -R, etc. switch
 CMU_GUESS_RUNPATH_SWITCH
@@ -740,8 +775,8 @@ if test "x$enable_afs" = "xyes"; then
       AC_DEFINE(AFSPTS_USE_KRB5,[],[Should the AFS PTS plugin use krb5?])
     ])
 
-    CFLAGS="${CFLAGS} -I${with_afs_incdir}/include"
-    AFS_LIBS="${with_afs_libdir}/afs/libkauth.a ${with_afs_libdir}/afs/libprot.a  ${with_afs_libdir}/afs/libauth.a ${with_afs_libdir}/afs/libsys.a ${with_afs_libdir}/librxkad.a ${with_afs_libdir}/librx.a ${with_afs_libdir}/afs/libsys.a ${with_afs_libdir}/libubik.a  ${with_afs_libdir}/liblwp.a ${with_afs_libdir}/afs/util.a ${with_afs_libdir}/afs/libcom_err.a"
+    CFLAGS="${CFLAGS} -I${with_afs_incdir}"
+    AFS_LIBS="${with_afs_libdir}/afs/libkauth.a ${with_afs_libdir}/afs/libprot.a  ${with_afs_libdir}/afs/libauth.a ${with_afs_libdir}/afs/libsys.a ${with_afs_libdir}/librxkad.a ${with_afs_libdir}/librx.a ${with_afs_libdir}/afs/libsys.a ${with_afs_libdir}/libubik.a  ${with_afs_libdir}/afs/liblwp.a ${with_afs_libdir}/afs/util.a ${with_afs_libdir}/afs/libafscom_err.a -lresolv"
     if test -f ${with_afs_libdir}/afs/libaudit.a; then
       AFS_LIBS="$AFS_LIBS ${with_afs_libdir}/afs/libaudit.a"
     fi
@@ -788,7 +823,7 @@ if test "x$enable_afs" = "xyes"; then
     AC_SUBST(AFS_LDFLAGS)
     AC_SUBST(AFS_LIBS)
 fi
-AM_CONDITIONAL([USE_AFSKRB], [test "$HAVE_AFSKRB" = "1"])
+AM_CONDITIONAL([USE_AFSKRB], [grep HAVE_AFSKRB confdefs.h >/dev/null])
 
 have_ldap=no
 LDAP_CPPFLAGS=
@@ -841,8 +876,50 @@ AC_SUBST(LDAP_LDFLAGS)
 AC_SUBST(LDAP_LIBS)
 AM_CONDITIONAL([HAVE_LDAP], [test "$have_ldap" = "yes"])
 
-
 AM_CONDITIONAL([PTCLIENT], [test "x$enable_afs" = "xyes" -o "$have_ldap" = "yes"])
+
+AC_ARG_WITH(
+    clamav,
+    [  --with-clamav=DIR use ClamAV from PATH (yes)],
+    with_clamav=$withval,
+    with_clamav=yes
+)
+
+if test "$with_clamav" != no; then
+    if test -d $with_clamav; then
+        save_CPPFLAGS="$CPPFLAGS"
+        save_LDFLAGS="$LDFLAGS"
+        save_LIBS="$LIBS"
+
+        CPPFLAGS="${CPPFLAGS} -I${with_clamav}/include"
+        LDFLAGS="$LDFLAGS -L${with_clamav}/$CMU_LIB_SUBDIR"
+        AC_CHECK_LIB(
+            wrap,
+            request_init,
+            [AC_CHECK_HEADER(clamav.h,, with_clamav=no)],
+            with_clamav=no
+        )
+        CPPFLAGS="$save_CPPFLAGS"
+        LDFLAGS="$save_LDFLAGS"
+        LIBS="$save_LIBS"
+    fi
+fi
+
+AC_MSG_CHECKING(ClamAV support)
+AC_MSG_RESULT($with_clamav)
+LIB_CLAMAV=""
+if test "$with_clamav" != "no"; then
+    AC_DEFINE(HAVE_CLAMAV,[],[Do we have ClamAV?])
+    if test -d "$with_clamav"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_clamav}/include"
+        LIB_CLAMAV="-L${with_clamav}/$CMU_LIB_SUBDIR -lclamav"
+    else
+        LIB_CLAMAV="-lclamav"
+    fi
+fi
+
+AC_SUBST(LIB_CLAMAV)
+AM_CONDITIONAL([HAVE_CLAMAV], [test "$have_clamav" = "yes"])
 
 AC_ARG_ENABLE(server,
 	[AS_HELP_STRING([--disable-server], [disable compiling servers])])
@@ -1042,7 +1119,38 @@ fi
 dnl
 dnl Test for zlib
 dnl
-CMU_HAVE_ZLIB
+AC_ARG_WITH(zlib, [AS_HELP_STRING([--with-zlib=DIR],[use zlib from DIR])],
+    with_zlib=$withval, with_zlib="yes")
+
+save_CPPFLAGS=$CPPFLAGS
+save_LDFLAGS=$LDFLAGS
+
+if test -d $with_zlib; then
+    CPPFLAGS="${CPPFLAGS} -I${with_lib}/include"
+    CMU_ADD_LIBPATH(${with_zlib}/$CMU_LIB_SUBDIR)
+fi
+
+ZLIB=""
+case "$with_zlib" in
+    no)
+      with_zlib="no";;
+    *)
+    AC_CHECK_HEADER(zlib.h, [
+        AC_CHECK_LIB(z, deflate,
+                LIBS="${LIBS} -lz"; with_zlib="yes",
+                with_zlib="no",)],
+        with_zlib=no)
+    ;;
+esac
+
+if test "$with_zlib" != "no"; then
+    AC_DEFINE(HAVE_ZLIB,[],[Do we have zlib?])
+    ZLIB="-lz"
+else
+    CPPFLAGS=$save_CPPFLAGS
+    LDFLAGS=$save_LDFLAGS
+fi
+
 AC_MSG_CHECKING(for zlib)
 AC_MSG_RESULT($with_zlib)
 AC_SUBST(ZLIB)
@@ -1537,6 +1645,8 @@ if test "$enable_unit_tests" = "yes" ; then
     dnl different package to the main valgrind binary, and so might not be
     dnl installed.
     AC_CHECK_HEADERS([valgrind/valgrind.h])
+
+    USE_MAINTAINER_MODE=yes
 fi
 
 AM_CONDITIONAL([CUNIT], [test "$enable_unit_tests" = "yes"])
@@ -1629,11 +1739,6 @@ AH_BOTTOM([
 #  else
 #    define O_DSYNC     O_FSYNC         /* BSD */
 #  endif
-#endif
-
-#ifndef HAVE___ATTRIBUTE__
-/* Can't use attributes... */
-#define __attribute__(foo)
 #endif
 
 #ifndef HAVE_SOCKLEN_T

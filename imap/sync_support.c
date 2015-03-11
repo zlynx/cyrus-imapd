@@ -210,7 +210,7 @@ int sync_getflags(struct dlist *kl,
 	    }
 	}
 	else {
-	    if (mailbox_user_flag(mailbox, s, &userflag, 1)) {
+	    if (mailbox_user_flag(mailbox, s, &userflag, /*allow all*/2)) {
 		syslog(LOG_ERR, "Unable to record user flag: %s", s);
 		free(s);
 		return IMAP_IOERROR;
@@ -257,7 +257,7 @@ int parse_upload(struct dlist *kr, struct mailbox *mailbox,
 
     /* the ANNOTATIONS list is optional too */
     if (salp && dlist_getlist(kr, "ANNOTATIONS", &fl))
-	decode_annotations(fl, salp);
+	decode_annotations(fl, salp, record);
 
     return 0;
 }
@@ -427,7 +427,7 @@ struct sync_folder *sync_folder_list_add(struct sync_folder_list *l,
 					 uint32_t uidvalidity,
 					 uint32_t last_uid,
 					 modseq_t highestmodseq,
-					 uint32_t crc,
+					 struct synccrcs synccrcs,
 					 uint32_t recentuid,
 					 time_t recenttime,
 					 time_t pop3_last_login,
@@ -454,7 +454,7 @@ struct sync_folder *sync_folder_list_add(struct sync_folder_list *l,
     result->last_uid = last_uid;
     result->highestmodseq = highestmodseq;
     result->options = options;
-    result->sync_crc = crc;
+    result->synccrcs = synccrcs;
     result->recentuid = recentuid;
     result->recenttime = recenttime;
     result->pop3_last_login = pop3_last_login;
@@ -671,8 +671,12 @@ void sync_decode_quota_limits(/*const*/ struct dlist *kl, quota_t limits[QUOTA_N
 	limits[res] = QUOTA_UNLIMITED;
 
     /* For backwards compatibility */
-    if (dlist_getnum32(kl, "LIMIT", &limit))
-	limits[QUOTA_STORAGE] = limit;
+    if (dlist_getnum32(kl, "LIMIT", &limit)) {
+	if (limit == 4294967295)
+	    limits[QUOTA_STORAGE] = -1;
+	else
+	    limits[QUOTA_STORAGE] = limit;
+    }
 
     for (res = 0 ; res < QUOTA_NUMRESOURCES ; res++) {
 	if (dlist_getnum32(kl, quota_names[res], &limit))
@@ -1362,6 +1366,7 @@ int sync_mailbox(struct mailbox *mailbox,
 		 int printrecords)
 {
     struct sync_annot_list *annots = NULL;
+    struct synccrcs synccrcs = mailbox_synccrcs(mailbox, /*force*/0);
     int r = 0;
 
     dlist_setatom(kl, "UNIQUEID", mailbox->uniqueid);
@@ -1379,7 +1384,8 @@ int sync_mailbox(struct mailbox *mailbox,
     dlist_setatom(kl, "PARTITION", mailbox->part);
     dlist_setatom(kl, "ACL", mailbox->acl);
     dlist_setatom(kl, "OPTIONS", sync_encode_options(mailbox->i.options));
-    dlist_setnum32(kl, "SYNC_CRC", sync_crc_calc(mailbox, /*force*/0));
+    dlist_setnum32(kl, "SYNC_CRC", synccrcs.basic);
+    dlist_setnum32(kl, "SYNC_CRC_ANNOT", synccrcs.annot);
     if (mailbox->quotaroot)
 	dlist_setatom(kl, "QUOTAROOT", mailbox->quotaroot);
 
@@ -1387,10 +1393,8 @@ int sync_mailbox(struct mailbox *mailbox,
     r = read_annotations(mailbox, NULL, &annots);
     if (r) goto done;
 
-    if (annots) {
-	encode_annotations(kl, annots);
-	sync_annot_list_free(&annots);
-    }
+    encode_annotations(kl, NULL, annots);
+    sync_annot_list_free(&annots);
 
     if (printrecords) {
 	struct index_record record;
@@ -1451,10 +1455,8 @@ int sync_mailbox(struct mailbox *mailbox,
 	    r = read_annotations(mailbox, &record, &annots);
 	    if (r) goto done;
 
-	    if (annots) {
-		encode_annotations(il, annots);
-		sync_annot_list_free(&annots);
-	    }
+	    encode_annotations(il, &record, annots);
+	    sync_annot_list_free(&annots);
 	}
     }
 
@@ -1572,16 +1574,18 @@ int sync_append_copyfile(struct mailbox *mailbox,
 	return r;
     }
 
+ just_write:
+    r = mailbox_append_index_record(mailbox, record);
+    if (r) return r;
+
     /* apply the remote annotations */
     r = apply_annotations(mailbox, record, NULL, annots, 0);
     if (r) {
 	syslog(LOG_ERR, "Failed to apply annotations: %s",
 	       error_message(r));
-	return r;
     }
 
- just_write:
-    return mailbox_append_index_record(mailbox, record);
+    return r;
 }
 
 /* ====================================================================== */
@@ -1626,22 +1630,32 @@ int read_annotations(const struct mailbox *mailbox,
  * structure with the given @parent.
  */
 void encode_annotations(struct dlist *parent,
+			struct index_record *record,
 			const struct sync_annot_list *sal)
 {
     const struct sync_annot *sa;
     struct dlist *annots = NULL;
     struct dlist *aa;
 
-    if (!sal)
-	return;
-    for (sa = sal->head ; sa ; sa = sa->next) {
+    if (sal) {
+	for (sa = sal->head ; sa ; sa = sa->next) {
+	    if (!annots)
+		annots = dlist_newlist(parent, "ANNOTATIONS");
+
+	    aa = dlist_newkvlist(annots, NULL);
+	    dlist_setatom(aa, "ENTRY", sa->entry);
+	    dlist_setatom(aa, "USERID", sa->userid);
+	    dlist_setmap(aa, "VALUE", sa->value.s, sa->value.len);
+	}
+    }
+
+    if (record && record->thrid) {
 	if (!annots)
 	    annots = dlist_newlist(parent, "ANNOTATIONS");
-
 	aa = dlist_newkvlist(annots, NULL);
-	dlist_setatom(aa, "ENTRY", sa->entry);
-	dlist_setatom(aa, "USERID", sa->userid);
-	dlist_setmap(aa, "VALUE", sa->value.s, sa->value.len);
+	dlist_setatom(aa, "ENTRY", "/vendor/cmu/cyrus-imapd/thrid");
+	dlist_setatom(aa, "USERID", NULL);
+	dlist_sethex64(aa, "VALUE", record->thrid);
     }
 }
 
@@ -1653,30 +1667,38 @@ void encode_annotations(struct dlist *parent,
  * Returns: zero on success or Cyrus error code.
  */
 int decode_annotations(/*const*/struct dlist *annots,
-		       struct sync_annot_list **salp)
+		       struct sync_annot_list **salp,
+		       struct index_record *record)
 {
     struct dlist *aa;
     const char *entry;
     const char *userid;
-    const char *v;
-    size_t l;
-    struct buf value = BUF_INITIALIZER;
 
     *salp = NULL;
     if (strcmp(annots->name, "ANNOTATIONS"))
 	return IMAP_PROTOCOL_BAD_PARAMETERS;
 
     for (aa = annots->head ; aa ; aa = aa->next) {
+	struct buf value = BUF_INITIALIZER;
 	if (!*salp)
 	    *salp = sync_annot_list_create();
 	if (!dlist_getatom(aa, "ENTRY", &entry))
 	    return IMAP_PROTOCOL_BAD_PARAMETERS;
 	if (!dlist_getatom(aa, "USERID", &userid))
 	    return IMAP_PROTOCOL_BAD_PARAMETERS;
-	if (!dlist_getmap(aa, "VALUE", &v, &l))
+	if (!dlist_getbuf(aa, "VALUE", &value))
 	    return IMAP_PROTOCOL_BAD_PARAMETERS;
-	buf_init_ro(&value, v, l);
-	sync_annot_list_add(*salp, entry, userid, &value);
+	if (!strcmp(entry, "/vendor/cmu/cyrus-imapd/thrid")) {
+	    if (record) {
+		const char *p = buf_cstring(&value);
+		parsehex(p, &p, 16, &record->thrid);
+		/* XXX - check on p? */
+	    }
+	}
+	else {
+	    sync_annot_list_add(*salp, entry, userid, &value);
+	}
+	buf_free(&value);
     }
     return 0;
 }
@@ -1798,29 +1820,6 @@ out:
     /* else, the struct mailbox manages it for us */
 
     return r;
-}
-
-/* ====================================================================== */
-
-static unsigned sync_crc_vers;
-
-int sync_crc_setup(unsigned minvers, unsigned maxvers, int strict)
-{
-    sync_crc_vers = mailbox_best_crcvers(minvers, maxvers);
-    if (strict) {
-	if (sync_crc_vers < minvers || sync_crc_vers > maxvers) {
-	    syslog(LOG_ERR, "IOERROR: failed to negotiate CRC: %u (%u %u)",
-		   sync_crc_vers, minvers, maxvers);
-	    return IMAP_PROTOCOL_ERROR;
-	}
-    }
-
-    return sync_crc_vers;
-}
-
-uint32_t sync_crc_calc(struct mailbox *mailbox, int force)
-{
-    return mailbox_sync_crc(mailbox, sync_crc_vers, force);
 }
 
 /* ====================================================================== */

@@ -667,6 +667,9 @@ static int backend_authenticate(struct backend *s, const char *userid,
     if (!c_key_file) {
 	c_key_file = config_getstring(IMAPOPT_TLS_CLIENT_KEY);
     }
+#else
+    const char *c_cert_file = NULL;
+    const char *c_key_file = NULL;
 #endif
 
     mechlist = backend_get_cap_params(s, CAPA_AUTH);
@@ -987,6 +990,7 @@ EXPORTED struct backend *backend_connect(struct backend *ret_backend, const char
     ret->in = prot_new(sock, 0);
     ret->out = prot_new(sock, 1);
     ret->sock = sock;
+    prot_settimeout(ret->in, config_getint(IMAPOPT_CLIENT_TIMEOUT));
     prot_setflushonread(ret->in, ret->out);
     ret->prot = prot;
 
@@ -1009,6 +1013,7 @@ EXPORTED struct backend *backend_connect(struct backend *ret_backend, const char
 	prot_setlog(ret->in, logfd);
 	prot_setlog(ret->out, logfd);
     }
+    else prot_settimeout(ret->in, 0);
 
     return ret;
 
