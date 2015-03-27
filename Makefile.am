@@ -41,7 +41,7 @@
 # OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
-ACLOCAL_AMFLAGS = -I cmulocal
+ACLOCAL_AMFLAGS = -I m4
 AM_CFLAGS = @PERL_CCCDLFLAGS@ $(COV_CFLAGS)
 
 AM_CPPFLAGS = \
@@ -1138,13 +1138,11 @@ imap/http_err.h imap/http_err.c: imap/http_err.et $(COMPILE_ET_DEP)
 imap/tz_err.h imap/tz_err.c: imap/tz_err.et $(COMPILE_ET_DEP)
 	cd imap && $(COMPILE_ET) ../$(top_srcdir)/imap/tz_err.et
 
-if MAINTAINER_MODE
 imap/rfc822_header.c: imap/rfc822_header.st
 	${top_srcdir}/tools/compile_st.pl -c $< > $@.NEW && mv $@.NEW $@
 
 imap/rfc822_header.h: imap/rfc822_header.st
 	${top_srcdir}/tools/compile_st.pl -h $< > $@.NEW && mv $@.NEW $@
-endif
 
 imtest_imtest_SOURCES = imtest/imtest.c
 imtest_imtest_LDADD = $(LD_BASIC_ADD)
