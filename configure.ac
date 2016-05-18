@@ -590,9 +590,26 @@ if test "x$enable_xapian" != xno ; then
     AC_SUBST(XAPIAN_CXXFLAGS)
     AC_SUBST(XAPIAN_LIBS)
     AC_SUBST(XAPIAN_VERSION)
+
 fi
 AM_CONDITIONAL([USE_XAPIAN], [test "${enable_xapian}" != "no"])
 
+AC_ARG_ENABLE(libtextcat,
+    [  --enable-libtextcat     enable language support using libtextcat],[
+       enable_libtextcat=$enableval
+    ],[
+       enable_libtextcat=no
+    ])
+if test "x$enable_libtextcat" != xno ; then
+    PKG_CHECK_MODULES([LIBTEXTCAT],[libtextcat],
+        [check_libtextcat=true]
+        [AC_SUBST([LIBTEXTCAT_LIBS])]
+        [AC_SUBST([LIBTEXTCAT_CFLAGS])]
+        [AC_DEFINE(ENABLE_LIBTEXTCAT, [], [Build with support for language identification])],
+        [check_libtextcat=false]
+        [AC_MSG_ERROR([libtextcat was not found, but is required for language identification])])
+fi
+AM_CONDITIONAL(LIBTEXTCAT, test x$check_libtextcat = xtrue)
 
 AM_CONDITIONAL([SQUATTER],
     [test "${enable_squat}" != "no" -o "${enable_sphinx}" != "no" -o "${enable_xapian}" != "no" ])

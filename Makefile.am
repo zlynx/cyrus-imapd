@@ -1108,6 +1108,11 @@ imap_libcyrus_imap_la_LIBADD += $(JANSSON_LIBS)
 imap_libcyrus_imap_la_CFLAGS += $(JANSSON_CFLAGS)
 endif
 
+if LIBTEXTCAT
+imap_libcyrus_imap_la_LIBADD += $(LIBTEXTCAT_LIBS)
+imap_libcyrus_imap_la_CFLAGS += $(LIBTEXTCAT_CFLAGS)
+endif
+
 if HTTPD
 imap_libcyrus_imap_la_SOURCES += \
 	imap/caldav_alarm.c \
