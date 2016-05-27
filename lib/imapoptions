@@ -2290,6 +2290,16 @@ product version in the capabilities */
 { "fastmailsharing", 0, SWITCH }
 /* If enabled, use FastMail style sharing (oldschool full server paths) */
 
+{ "language_conf_file", NULL, STRING }
+/* Configuration file for the libtextcat language classifier. If not specific,
+   will be confdir/languages/conf.txt */
+ 
+{ "language_model_path", NULL, STRING }
+/* The absolute base path to the libtextcat language models. Relative names
+   in language_conf_file will be appended to this path. If not specified,
+   will be confdir/languages/ (note the trailing slash) */
+ 
+
 /*
 .SH SEE ALSO
 .PP

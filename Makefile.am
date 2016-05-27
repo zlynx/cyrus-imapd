@@ -1004,6 +1004,8 @@ imap_libcyrus_imap_la_SOURCES = \
 	imap/imapparse.h \
 	imap/index.c \
 	imap/index.h \
+	imap/language.c \
+	imap/language.h \
 	imap/mailbox.c \
 	imap/mailbox.h \
 	imap/mbdump.c \

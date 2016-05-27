@@ -1,0 +1,35 @@
+#
+# A sample config file for the language models 
+# provided with Gertjan van Noords language guesser
+# (http://odur.let.rug.nl/~vannoord/TextCat/)
+#
+# Notes: 
+# - You may consider eliminating a couple of small languages from this
+# list because they cause false positives with big languages and are
+# bad for performance. (Do you really want to recognize Drents?)
+# - Putting the most probable languages at the top of the list
+# improves performance, because this will raise the threshold for
+# likely candidates more quickly.
+#
+
+LM/english-ascii.lm           english
+LM/spanish-utf_8.lm           spanish
+LM/french-utf_8.lm            french
+LM/russian-utf_8.lm           russian
+LM/german-utf_8.lm            german
+
+# Other languages supported by xapian (version 1.3)
+#LM/arabic-utf_8.lm            arabic
+#LM/armenian-utf_8.lm          armenian
+#LM/basque-ascii.lm            basque
+#LM/catalan-utf_8.lm           catalan
+#LM/danish-utf_8.lm            danish
+#LM/dutch-ascii.lm             dutch
+#LM/finnish-utf_8.lm           finnish
+#LM/hungarian-utf_8.lm         hungarian
+#LM/italian-utf_8.lm           italian
+#LM/norwegian-utf_8.lm         norwegian
+#LM/portuguese-utf_8.lm        portuguese
+#LM/romanian-ascii.lm          romanian
+#LM/swedish-utf_8.lm           swedish
+#LM/turkish-utf_8.lm           turkish
