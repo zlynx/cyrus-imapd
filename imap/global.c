@@ -241,8 +241,16 @@ EXPORTED int cyrus_init(const char *alt_config, const char *ident, unsigned flag
     val = config_getstring(IMAPOPT_SUPPRESS_CAPABILITIES);
     if (val)
         suppressed_capabilities = strarray_split(val, NULL, 0);
-    if (config_getswitch(IMAPOPT_SEARCH_SKIPDIACRIT))
+    if (config_getswitch(IMAPOPT_SEARCH_SKIPDIACRIT)) {
+#ifdef ENABLE_LIBTEXTCAT
+        syslog(LOG_ERR, "Language support is enabled, but configuration "
+                "option search_skipdiacrit is set to 'true'. This might "
+                "corrupt search indices. Aborting.");
+        exit(1);
+#else
         charset_flags |= CHARSET_SKIPDIACRIT;
+#endif /* ENABLE_LIBTEXTCAT */
+    }
 
     switch (config_getenum(IMAPOPT_SEARCH_WHITESPACE)) {
         case IMAP_ENUM_SEARCH_WHITESPACE_MERGE:
