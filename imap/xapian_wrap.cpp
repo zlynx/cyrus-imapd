@@ -456,7 +456,7 @@ void xapian_db_close(xapian_db_t *db)
     }
 }
 
-xapian_query_t *xapian_query_new_match(xapian_db_t *db, const char *prefix, const char *str)
+xapian_query_t *xapian_query_new_match(const xapian_db_t *db, const char *prefix, const char *str)
 {
     try {
         // We don't use FLAG_BOOLEAN because Cyrus is doing boolean for us
