@@ -219,6 +219,11 @@ static json_t *buildinfo()
 #else
     json_object_set_new(search, "xapian", json_false());
 #endif
+#ifdef ENABLE_LIBTEXTCAT
+    json_object_set_new(search, "language", json_true());
+#else
+    json_object_set_new(search, "language", json_false());
+#endif
 
     /* Supported hardware features */
 #ifdef HAVE_SSE42

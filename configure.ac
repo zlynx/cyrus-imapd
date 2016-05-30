@@ -2177,6 +2177,7 @@ Search engine:
    squat:              $enable_squat
    sphinx:             $enable_sphinx
    xapian:             $enable_xapian
+   language:           $enable_libtextcat
 
 Hardware support:
     SSE4.2:            $cyrus_cv_sse42
