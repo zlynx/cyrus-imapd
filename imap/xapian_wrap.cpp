@@ -92,6 +92,75 @@ static char *language_detect(const char *src, size_t len)
 #endif /* ENABLE_LIBTEXTCAT */
 }
 
+/*
+ * Normalize the UTF-8 encoded, search-normalized text in src based on language
+ * lang. Store the normalized bytes in dst.
+ * Return the count of normalized bytes,or 0 if no normalization is required.
+ */
+static int normalize_text(struct buf *dst, const char *src, const char *lang)
+{
+    int is_ascii;
+    char *s;
+
+    if (lang && strncasecmp(lang, "english", 7)) {
+        /* Keep src as-is for any language other than unknown or English */
+        return 0;
+    }
+
+    /* src contains English text. Check if it only contains plain ASCII */
+    is_ascii = 1;
+    for (const char *p = src; *p; p++) {
+        if ((*p & 0xff) > 0x7f) {
+            is_ascii = 0;
+            break;
+        }
+    }
+    if (is_ascii) {
+        return 0;
+    }
+
+    /* Could be valid English with rarely used diacritics. Get rid of them */
+    int flags = CHARSET_SKIPDIACRIT | CHARSET_MERGESPACE;
+    s = charset_utf8_to_searchform(src, flags);
+    if (!s) {
+        return 0;
+    }
+
+    /* Return the normalized text */
+    buf_reset(dst);
+    buf_appendcstr(dst, s);
+    free(s);
+    return buf_len(dst);
+}
+
+typedef std::map<const std::string, Xapian::Stem*> StemmerMap;
+
+static Xapian::Stem* get_or_create_stemmer(StemmerMap *stemmers, const char *lang)
+{
+    Xapian::Stem *stemmer = NULL;
+
+    if (lang) {
+        StemmerMap::iterator it = stemmers->find(lang);
+        if (it == stemmers->end()) {
+            try {
+                stemmer = new Xapian::Stem(lang);
+                (*stemmers)[lang] = stemmer;
+            } catch (Xapian::InvalidArgumentError &err) {
+                syslog(LOG_ERR, "Xapian: unsupported stemmer language: %s", lang);
+            }
+        } else {
+            stemmer = it->second;
+        }
+    }
+    if (!stemmer) {
+        stemmer = (*stemmers)["english"];
+    }
+
+    return stemmer;
+}
+
+
+
 /* ====================================================================== */
 
 void xapian_init(void)
@@ -142,7 +211,7 @@ int xapian_compact_dbs(const char *dest, const char **sources)
 struct xapian_dbw
 {
     Xapian::WritableDatabase *database;
-    Xapian::Stem *stemmer;
+    StemmerMap *stemmers;
     Xapian::TermGenerator *term_generator;
     Xapian::Document *document;
 };
@@ -156,8 +225,10 @@ int xapian_dbw_open(const char *path, xapian_dbw_t **dbwp)
         int action = Xapian::DB_CREATE_OR_OPEN;
         dbw->database = new Xapian::WritableDatabase(path, action);
         dbw->term_generator = new Xapian::TermGenerator();
-        dbw->stemmer = new Xapian::Stem("en");
-        dbw->term_generator->set_stemmer(*dbw->stemmer);
+
+        dbw->stemmers = new StemmerMap;
+        Xapian::Stem *stemmer = get_or_create_stemmer(dbw->stemmers, "english");
+        dbw->term_generator->set_stemmer(*stemmer);
         dbw->term_generator->set_stemming_strategy(Xapian::TermGenerator::STEM_ALL);
     }
     catch (const Xapian::DatabaseLockError &err) {
@@ -185,7 +256,11 @@ void xapian_dbw_close(xapian_dbw_t *dbw)
     try {
         delete dbw->database;
         delete dbw->term_generator;
-        delete dbw->stemmer;
+        for (StemmerMap::iterator it = dbw->stemmers->begin();
+                it != dbw->stemmers->end(); ++it) {
+            delete it->second;
+        }
+        delete dbw->stemmers;
         delete dbw->document;
         free(dbw);
     }
@@ -259,47 +334,6 @@ int xapian_dbw_begin_doc(xapian_dbw_t *dbw, const char *cyrusid)
     return r;
 }
 
-/*
- * Normalize the UTF-8 encoded, search-normalized text in src based on language
- * lang. Store the normalized bytes in dst.
- * Return the count of normalized bytes,or 0 if no normalization is required.
- */
-static int normalize_text(struct buf *dst, const char *src, const char *lang)
-{
-    int is_ascii;
-    char *s;
-
-    if (lang && strncasecmp(lang, "english", 7)) {
-        /* Keep src as-is for any language other than unknown or English */
-        return 0;
-    }
-
-    /* src contains English text. Check if it only contains plain ASCII */
-    is_ascii = 1;
-    for (const char *p = src; *p; p++) {
-        if ((*p & 0xff) > 0x7f) {
-            is_ascii = 0;
-            break;
-        }
-    }
-    if (is_ascii) {
-        return 0;
-    }
-
-    /* Could be valid English with rarely used diacritics. Get rid of them */
-    int flags = CHARSET_SKIPDIACRIT | CHARSET_MERGESPACE;
-    s = charset_utf8_to_searchform(src, flags);
-    if (!s) {
-        return 0;
-    }
-
-    /* Return the normalized text */
-    buf_reset(dst);
-    buf_appendcstr(dst, s);
-    free(s);
-    return buf_len(dst);
-}
-
 int xapian_dbw_doc_part(xapian_dbw_t *dbw, const struct buf *part, const char *prefix)
 {
     int r = 0;
@@ -308,9 +342,8 @@ int xapian_dbw_doc_part(xapian_dbw_t *dbw, const struct buf *part, const char *p
         char *lang = language_detect(buf_cstring(part), buf_len(part));
 
         // Update the term generator's stemmer based on the language
-        if (dbw->stemmer) delete dbw->stemmer;
-        dbw->stemmer = new Xapian::Stem(lang ? lang : "en");
-        dbw->term_generator->set_stemmer(*dbw->stemmer);
+        Xapian::Stem *stemmer = get_or_create_stemmer(dbw->stemmers, lang);
+        dbw->term_generator->set_stemmer(*stemmer);
 
         // Index the normalized text
         struct buf buf = BUF_INITIALIZER;
@@ -355,7 +388,7 @@ struct xapian_db
 {
     std::string *paths;
     Xapian::Database *database;
-    Xapian::Stem *stemmer;
+    StemmerMap *stemmers;
     Xapian::QueryParser *parser;
 };
 
@@ -375,9 +408,12 @@ int xapian_db_open(const char **paths, xapian_db_t **dbp)
             db->paths->append(" ");
             thispath = "(unknown)";
         }
-        db->stemmer = new Xapian::Stem("en");
+
+        db->stemmers = new StemmerMap;
+        Xapian::Stem *stemmer = get_or_create_stemmer(db->stemmers, "english");
+
         db->parser = new Xapian::QueryParser;
-        db->parser->set_stemmer(*db->stemmer);
+        db->parser->set_stemmer(*stemmer);
         db->parser->set_default_op(Xapian::Query::OP_AND);
         db->parser->set_database(*db->database);
     }
@@ -399,7 +435,11 @@ void xapian_db_close(xapian_db_t *db)
 {
     try {
         delete db->database;
-        delete db->stemmer;
+        for (StemmerMap::iterator it = db->stemmers->begin();
+                it != db->stemmers->end(); ++it) {
+            delete it->second;
+        }
+        delete db->stemmers;
         delete db->parser;
         delete db->paths;
         free(db);
@@ -447,9 +487,8 @@ xapian_query_t *xapian_query_new_match(xapian_db_t *db, const char *prefix, cons
             }
 
             // Update the query parser stemmer
-            if (db->stemmer) delete db->stemmer;
-            db->stemmer = new Xapian::Stem(lang ? lang : "en");
-            db->parser->set_stemmer(*db->stemmer);
+            Xapian::Stem *stemmer = get_or_create_stemmer(db->stemmers, lang);
+            db->parser->set_stemmer(*stemmer);
 
             // Clean up
             buf_free(&buf);
@@ -564,7 +603,7 @@ int xapian_query_run(const xapian_db_t *db, const xapian_query_t *qq,
 
 struct xapian_snipgen
 {
-    Xapian::Stem *stemmer;
+    StemmerMap *stemmers;
     Xapian::SnippetGenerator *snippet_generator;
 };
 
@@ -575,9 +614,11 @@ xapian_snipgen_t *xapian_snipgen_new(void)
     try {
         snipgen = (xapian_snipgen_t *)xzmalloc(sizeof(xapian_snipgen_t));
 
-        snipgen->stemmer = new Xapian::Stem("en");
+        snipgen->stemmers = new StemmerMap;
+        Xapian::Stem *stemmer = get_or_create_stemmer(snipgen->stemmers, "english");
+
         snipgen->snippet_generator = new Xapian::SnippetGenerator;
-        snipgen->snippet_generator->set_stemmer(*snipgen->stemmer);
+        snipgen->snippet_generator->set_stemmer(*stemmer);
     }
     catch (const Xapian::Error &err) {
         syslog(LOG_ERR, "IOERROR: Xapian: caught exception: %s: %s",
@@ -591,7 +632,11 @@ void xapian_snipgen_free(xapian_snipgen_t *snipgen)
 {
     try {
         delete snipgen->snippet_generator;
-        delete snipgen->stemmer;
+        for (StemmerMap::iterator it = snipgen->stemmers->begin();
+                it != snipgen->stemmers->end(); ++it) {
+            delete it->second;
+        }
+        delete snipgen->stemmers;
         free(snipgen);
     }
     catch (const Xapian::Error &err) {
@@ -613,10 +658,9 @@ int xapian_snipgen_add_match(xapian_snipgen_t *snipgen, const char *match)
         normalize_text(&buf, match, lang);
         snipgen->snippet_generator->add_match(buf_len(&buf) ? buf_cstring(&buf) : match);
 
-        // Keep the stemmer for the most recently detected match language
-        if (snipgen->stemmer) delete snipgen->stemmer;
-        snipgen->stemmer = new Xapian::Stem(lang ? lang : "en");
-        snipgen->snippet_generator->set_stemmer(*snipgen->stemmer);
+        // Reset the snippet generator to the most recenlty detected language
+        Xapian::Stem *stemmer = get_or_create_stemmer(snipgen->stemmers, lang);
+        snipgen->snippet_generator->set_stemmer(*stemmer);
 
         // Clean up
         buf_free(&buf);
