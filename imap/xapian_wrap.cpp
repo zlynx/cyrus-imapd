@@ -68,8 +68,13 @@ static char *language_detect(const char *src, size_t len)
 #ifdef ENABLE_LIBTEXTCAT
     char *lang, *p, *q;
 
-    /* Feed libtextcat with the first bytes of src */
-    lang = textcat_Classify(textcats, src, len > 512 ? 512 : len);
+    /* Feed libtextcat with the first bytes of src. Try to truncate to sane UTF-8 */
+    size_t l = len > 512 ? 512 : len;
+    while (l && !isascii(src[l]))
+        l--;
+    if (!l) l = len;
+
+    lang = textcat_Classify(textcats, src, l);
     if (!strcmp(lang, "UNKNOWN") || strlen(lang) < 3 || *lang != '[') {
         return NULL;
     }
@@ -110,7 +115,7 @@ static int normalize_text(struct buf *dst, const char *src, const char *lang)
     /* src contains English text. Check if it only contains plain ASCII */
     is_ascii = 1;
     for (const char *p = src; *p; p++) {
-        if ((*p & 0xff) > 0x7f) {
+        if (!isascii(*p)) {
             is_ascii = 0;
             break;
         }
