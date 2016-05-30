@@ -5,6 +5,7 @@
 #include <syslog.h>
 
 extern "C" {
+#include "charset.h"
 #include "xmalloc.h"
 #include "xapian_wrap.h"
 
@@ -16,18 +17,22 @@ extern "C" {
 
 #define SLOT_CYRUSID        0
 
-/* ====================================================================== */
-#ifdef LIBTEXTCAT_ENABLE
+// from global.h
+extern int charset_flags;
 
+/* ====================================================================== */
+#ifdef ENABLE_LIBTEXTCAT
 extern "C" {
 #include "libconfig.h"
 #include "libtextcat/textcat.h"
 };
+#endif /* LBITEXTCAT_ENABLE */
 
 static void *textcats = NULL;
 
 static void language_init(void)
 {
+#ifdef ENABLE_LIBTEXTCAT
     static int init = 0;
 
     if (!init) {
@@ -53,17 +58,24 @@ static void language_init(void)
         free(modpath);
         init = 1;
     }
+#endif /* LBITEXTCAT_ENABLE */
 }
 
 /* Identify the natural language in UTF-8 encoded text src of byte length len.
  * Return NULL if no language could be detected. */
 static char *language_detect(const char *src, size_t len)
 {
+#ifdef ENABLE_LIBTEXTCAT
     char *lang, *p, *q;
 
     /* Feed libtextcat with the first bytes of src */
     lang = textcat_Classify(textcats, src, len > 512 ? 512 : len);
     if (!strcmp(lang, "UNKNOWN") || strlen(lang) < 3 || *lang != '[') {
+        return NULL;
+    }
+
+    /* always err on the side of English */
+    if (strstr(lang, "english")) {
         return NULL;
     }
 
@@ -75,8 +87,10 @@ static char *language_detect(const char *src, size_t len)
     }
 
     return xstrndup(p, q - p);
+#else
+    return NULL;
+#endif /* ENABLE_LIBTEXTCAT */
 }
-#endif /* LIBTEXTCAT_ENABLE */
 
 /* ====================================================================== */
 
@@ -87,9 +101,7 @@ void xapian_init(void)
 
     if (!init) {
         putenv(enable_ngrams);
-#ifdef LIBTEXTCAT_ENABLE
         language_init();
-#endif /* LIBTEXTCAT_ENABLE */
         init = 1;
     }
 }
@@ -247,12 +259,71 @@ int xapian_dbw_begin_doc(xapian_dbw_t *dbw, const char *cyrusid)
     return r;
 }
 
+/*
+ * Normalize the UTF-8 encoded, search-normalized text in src based on language
+ * lang. Store the normalized bytes in dst.
+ * Return the count of normalized bytes,or 0 if no normalization is required.
+ */
+static int normalize_text(struct buf *dst, const char *src, const char *lang)
+{
+    int is_ascii;
+    char *s;
+
+    if (lang && strncasecmp(lang, "english", 7)) {
+        /* Keep src as-is for any language other than unknown or English */
+        return 0;
+    }
+
+    /* src contains English text. Check if it only contains plain ASCII */
+    is_ascii = 1;
+    for (const char *p = src; *p; p++) {
+        if ((*p & 0xff) > 0x7f) {
+            is_ascii = 0;
+            break;
+        }
+    }
+    if (is_ascii) {
+        return 0;
+    }
+
+    /* Could be valid English with rarely used diacritics. Get rid of them */
+    int flags = CHARSET_SKIPDIACRIT | CHARSET_MERGESPACE;
+    s = charset_utf8_to_searchform(src, flags);
+    if (!s) {
+        return 0;
+    }
+
+    /* Return the normalized text */
+    buf_reset(dst);
+    buf_appendcstr(dst, s);
+    free(s);
+    return buf_len(dst);
+}
+
 int xapian_dbw_doc_part(xapian_dbw_t *dbw, const struct buf *part, const char *prefix)
 {
     int r = 0;
     try {
-        dbw->term_generator->index_text(Xapian::Utf8Iterator(part->s, part->len), 1, prefix);
+        // Detect the language of this document part
+        char *lang = language_detect(buf_cstring(part), buf_len(part));
+
+        // Update the term generator's stemmer based on the language
+        if (dbw->stemmer) delete dbw->stemmer;
+        dbw->stemmer = new Xapian::Stem(lang ? lang : "en");
+        dbw->term_generator->set_stemmer(*dbw->stemmer);
+
+        // Index the normalized text
+        struct buf buf = BUF_INITIALIZER;
+        if (normalize_text(&buf, buf_cstring(part), lang)) {
+            dbw->term_generator->index_text(Xapian::Utf8Iterator(buf.s, buf.len), 1, prefix);
+        } else {
+            dbw->term_generator->index_text(Xapian::Utf8Iterator(part->s, part->len), 1, prefix);
+        }
         dbw->term_generator->increase_termpos();
+
+        // Clean up
+        buf_free(&buf);
+        if (lang) free(lang);
     }
     catch (const Xapian::Error &err) {
         syslog(LOG_ERR, "IOERROR: Xapian: caught exception: %s: %s",
@@ -340,7 +411,7 @@ void xapian_db_close(xapian_db_t *db)
     }
 }
 
-xapian_query_t *xapian_query_new_match(const xapian_db_t *db, const char *prefix, const char *str)
+xapian_query_t *xapian_query_new_match(xapian_db_t *db, const char *prefix, const char *str)
 {
     try {
         // We don't use FLAG_BOOLEAN because Cyrus is doing boolean for us
@@ -362,7 +433,28 @@ xapian_query_t *xapian_query_new_match(const xapian_db_t *db, const char *prefix
         }
         else {
             // quote the query for phrase management
-            std::string quoted = std::string("\"") + str + "\"";
+            std::string quoted;
+
+            // Detect the language of this match
+            char *lang = language_detect(str, strlen(str));
+
+            // Normalize the match string
+            struct buf buf = BUF_INITIALIZER;
+            if (normalize_text(&buf, str, lang)) {
+                quoted = std::string("\"") + buf_cstring(&buf) + "\"";
+            } else {
+                quoted = std::string("\"") + str + "\"";
+            }
+
+            // Update the query parser stemmer
+            if (db->stemmer) delete db->stemmer;
+            db->stemmer = new Xapian::Stem(lang ? lang : "en");
+            db->parser->set_stemmer(*db->stemmer);
+
+            // Clean up
+            buf_free(&buf);
+            if (lang) free(lang);
+
             db->parser->set_stemming_strategy(Xapian::QueryParser::STEM_ALL);
             Xapian::Query query = db->parser->parse_query(
                                     quoted,
@@ -513,7 +605,22 @@ int xapian_snipgen_add_match(xapian_snipgen_t *snipgen, const char *match)
     int r = 0;
 
     try {
-        snipgen->snippet_generator->add_match(match);
+        // Detect the language of this match or fall back to default
+        char *lang = language_detect(match, strlen(match));
+
+        // Add the normalized match text to the snippet generator
+        struct buf buf = BUF_INITIALIZER;
+        normalize_text(&buf, match, lang);
+        snipgen->snippet_generator->add_match(buf_len(&buf) ? buf_cstring(&buf) : match);
+
+        // Keep the stemmer for the most recently detected match language
+        if (snipgen->stemmer) delete snipgen->stemmer;
+        snipgen->stemmer = new Xapian::Stem(lang ? lang : "en");
+        snipgen->snippet_generator->set_stemmer(*snipgen->stemmer);
+
+        // Clean up
+        buf_free(&buf);
+        free(lang);
     }
     catch (const Xapian::Error &err) {
         syslog(LOG_ERR, "IOERROR: Xapian: caught exception: %s: %s",
