@@ -1,5 +1,6 @@
 
 #include <config.h>
+#include <string.h>
 #include <sys/types.h>
 #include <syslog.h>
 
@@ -16,6 +17,68 @@ extern "C" {
 #define SLOT_CYRUSID        0
 
 /* ====================================================================== */
+#ifdef LIBTEXTCAT_ENABLE
+
+extern "C" {
+#include "libconfig.h"
+#include "libtextcat/textcat.h"
+};
+
+static void *textcats = NULL;
+
+static void language_init(void)
+{
+    static int init = 0;
+
+    if (!init) {
+        char *conf = (char *) config_getstring(IMAPOPT_LANGUAGE_CONF_FILE);
+        if (!conf)
+            conf = strconcat(config_dir, "/languages/conf.txt", (char*)NULL);
+        else
+            conf = xstrdup(conf);
+
+        char *modpath = (char *) config_getstring(IMAPOPT_LANGUAGE_MODEL_PATH);
+        if (!modpath)
+            modpath = strconcat(config_dir, "/languages/", (char*)NULL);
+        else
+            modpath = xstrdup(modpath);
+
+        textcats = special_textcat_Init(conf, modpath);
+        if (textcats == NULL) {
+            syslog(LOG_ERR, "Failed to initialize languages (conf=%s, models=%s)",
+                    conf, modpath);
+            exit(1);
+        }
+        free(conf);
+        free(modpath);
+        init = 1;
+    }
+}
+
+/* Identify the natural language in UTF-8 encoded text src of byte length len.
+ * Return NULL if no language could be detected. */
+static char *language_detect(const char *src, size_t len)
+{
+    char *lang, *p, *q;
+
+    /* Feed libtextcat with the first bytes of src */
+    lang = textcat_Classify(textcats, src, len > 512 ? 512 : len);
+    if (!strcmp(lang, "UNKNOWN") || strlen(lang) < 3 || *lang != '[') {
+        return NULL;
+    }
+
+    /* Pick the first language identified by libtextcat */
+    p = lang + 1;
+    q = strchr(p, ']');
+    if (!q) {
+        return NULL;
+    }
+
+    return xstrndup(p, q - p);
+}
+#endif /* LIBTEXTCAT_ENABLE */
+
+/* ====================================================================== */
 
 void xapian_init(void)
 {
@@ -24,6 +87,9 @@ void xapian_init(void)
 
     if (!init) {
         putenv(enable_ngrams);
+#ifdef LIBTEXTCAT_ENABLE
+        language_init();
+#endif /* LIBTEXTCAT_ENABLE */
         init = 1;
     }
 }
