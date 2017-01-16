@@ -144,6 +144,13 @@ struct dttags {
     int date_part;
 };
 
+struct dhtags {
+    int index;
+    int comptag;
+    int relation;
+    char *comparator;
+};
+
 static char *check_reqs(sieve_script_t *script, strarray_t *sl);
 struct ftags {
     int copy;
@@ -178,6 +185,8 @@ static commandlist_t *build_include(int, struct itags *, char*);
 static commandlist_t *build_set(int t, struct stags *s, char *variable, char *value);
 static commandlist_t *build_flag(int t, char *variable, strarray_t *flags);
 static commandlist_t *build_addheader(int t, int index, char *name, char *value);
+static commandlist_t *build_deleteheader(int t, struct dhtags *dh,
+                                         char *name, strarray_t *values);
 static struct aetags *new_aetags(void);
 static struct aetags *canon_aetags(struct aetags *ae);
 static void free_aetags(struct aetags *ae);
@@ -209,6 +218,9 @@ static void free_mtags(struct mtags *h);
 static struct stags *new_stags(void);
 static struct stags *canon_stags(struct stags *s);
 static void free_stags(struct stags *s);
+static struct dhtags *new_dhtags(void);
+static struct dhtags *canon_dhtags(struct dhtags *dh);
+static void free_dhtags(struct dhtags *dh);
 
 static int verify_stringlist(sieve_script_t*, strarray_t *sl, int (*verify)(sieve_script_t*, char *));
 static int verify_mailbox(sieve_script_t*, char *s);
@@ -255,6 +267,7 @@ extern void sieverestart(FILE *f);
     struct dttags *dttag;
     struct ftags *ftag;
     struct stags *stag;
+    struct dhtags *dhtag;
 }
 
 %token <nval> NUMBER
@@ -282,7 +295,7 @@ extern void sieverestart(FILE *f);
 %token ADDHEADER DELETEHEADER
 
 %type <cl> commands command action elsif block
-%type <sl> stringlist strings
+%type <sl> optstringlist stringlist strings
 %type <test> test
 %type <nval> comptag relcomp sizetag addrparttag addrorenv copy rtags creat
 %type <testl> testlist tests
@@ -303,6 +316,7 @@ extern void sieverestart(FILE *f);
 %type <sval> flagtags
 %type <nval> flagaction
 %type <nval> ahtags
+%type <dhtag> dhtags
 
 %name-prefix "sieve"
 %defines
@@ -461,13 +475,77 @@ action: REJCT STRING             { if (!parse_script->support.reject) {
                                    if (!verify_header(parse_script, $3)) {
                                      YYERROR; /* vh should call yyerror() */
                                    }
-                                   /* XXX  do we need to validate value? */
+                                   if (!verify_utf8(parse_script, $4)) {
+                                     YYERROR; /* vu should call yyerror() */
+                                   }
                                    $$ = build_addheader(ADDHEADER, $2, $3, $4);
+                                 }
+        ;
+
+        | DELETEHEADER dhtags STRING optstringlist {
+                                   if (!parse_script->support.editheader) {
+                                     yyerror(parse_script, "editheader MUST be enabled with \"require\"");
+                                     YYERROR;
+                                   }
+                                   else if (!verify_header(parse_script, $3)) {
+                                     YYERROR; /* vh should call yyerror() */
+                                   }
+                                   else if (!strcasecmp("Received", $3) ||
+                                            !strcasecmp("Auto-Submitted", $3)) {
+                                     yyerror(parse_script, "MUST NOT delete Received or Auto-Submitted headers");
+                                     YYERROR;
+                                   }
+                                   else if (!verify_stringlist(parse_script, $4, verify_utf8)) {
+                                     YYERROR; /* vu should call yyerror() */
+                                   }
+                                   else {
+                                     $2 = canon_dhtags($2);
+                                     $$ = build_deleteheader(DELETEHEADER, $2, $3, $4);
+                                   }
                                  }
         ;
 
 ahtags: /* empty */              { $$ = 1; }
         | LAST                   { $$ = -1; }
+        ;
+
+dhtags: /* empty */              { $$ = new_dhtags(); }
+        | dhtags comptag         { $$ = $1;
+                                   if ($$->comptag != -1) {
+                                     yyerror(parse_script, "duplicate comparator type tag"); YYERROR; }
+                                   else { $$->comptag = $2; } }
+
+        | dhtags relcomp STRING  { $$ = $1;
+                                   if ($$->comptag != -1) {
+                                     yyerror(parse_script, "duplicate comparator type tag"); YYERROR; }
+                                   else {
+                                     $$->comptag = $2;
+                                     $$->relation = verify_relat(parse_script, $3);
+                                     if ($$->relation == -1) {
+                                       YYERROR; /*vr called yyerror()*/ } } }
+
+        | dhtags COMPARATOR STRING { $$ = $1;
+                                    if ($$->comparator != NULL) {
+                                      yyerror(parse_script, "duplicate comparator tag"); YYERROR; }
+                                    else if (!strcmp($3, "i;ascii-numeric") &&
+                                      !parse_script->support.i_ascii_numeric) {
+                                      yyerror(parse_script, "comparator-i;ascii-numeric MUST be enabled with \"require\"");  YYERROR; }
+                                    else { $$->comparator = $3; } }
+
+        | dhtags INDEX NUMBER   { $$ = $1;
+                                   if ($$->index != 0) {
+                                     yyerror(parse_script, "duplicate index argument"); YYERROR; }
+                                   if ($3 <= 0) {
+                                     yyerror(parse_script, "invalid index value"); YYERROR; }
+                                   else { $$->index = $3; } }
+
+        | dhtags LAST           { $$ = $1;
+                                   if ($$->index == 0) {
+                                     yyerror(parse_script, "index argument is required"); YYERROR; }
+                                   else if ($$->index < 0) {
+                                     yyerror(parse_script, "duplicate last argument"); YYERROR; }
+                                   else { $$->index *= -1; } }
+
         ;
 
 flagaction: ADDFLAG
@@ -654,6 +732,10 @@ vtags: /* empty */               { $$ = new_vtags(); }
                                         YYERROR; }
                                    else { $$->mime = MIME; } }
         ;
+
+optstringlist: /* empty */       { $$ = strarray_new(); }
+        | stringlist             { $$ = $1; }
+;
 
 stringlist: '[' strings ']'      { $$ = $2; }
         | STRING                 {
@@ -1517,6 +1599,26 @@ static commandlist_t *build_addheader(int t, int index, char *name, char *value)
     return ret;
 }
 
+static commandlist_t *build_deleteheader(int t, struct dhtags *dh,
+                                         char *name, strarray_t *values)
+{
+    commandlist_t *ret = new_command(t);
+
+    assert(t == DELETEHEADER);
+
+    if (ret) {
+        ret->u.dh.index = dh->index;
+        ret->u.dh.comptag = dh->comptag;
+        ret->u.dh.relation = dh->relation;
+        ret->u.dh.comparator = xstrdup(dh->comparator);
+        ret->u.dh.name = xstrdup(name);
+        ret->u.dh.values = values;
+        free_dhtags(dh);
+    }
+
+    return ret;
+}
+
 static struct aetags *new_aetags(void)
 {
     struct aetags *r = (struct aetags *) xmalloc(sizeof(struct aetags));
@@ -1822,6 +1924,34 @@ static void free_ftags(struct ftags *f)
     if (f->flags) { strarray_free(f->flags); }
     free(f);
 }
+
+static struct dhtags *new_dhtags(void)
+{
+    struct dhtags *dh = (struct dhtags *) xmalloc(sizeof(struct dhtags));
+    dh->index = 0;
+    dh->comptag = -1;
+    dh->relation = -1;
+    dh->comparator = NULL;
+    return dh;
+}
+
+static struct dhtags *canon_dhtags(struct dhtags *dh)
+{
+    if (dh->comptag == -1) {
+        dh->comptag = IS;
+    }
+    if (dh->comparator == NULL) {
+        dh->comparator = xstrdup("i;ascii-casemap");
+    }
+    return dh;
+}
+
+static void free_dhtags(struct dhtags *dh)
+{
+    free(dh->comparator);
+    free(dh);
+}
+
 
 static int verify_identifier(sieve_script_t *parse_script, char *s)
 {
