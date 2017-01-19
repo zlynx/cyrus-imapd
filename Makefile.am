@@ -78,6 +78,8 @@ CLEANFILES = \
 DISTCLEANFILES = \
 	imap/imap_err.c \
 	imap/imap_err.h \
+	imap/lmtp_err.c \
+	imap/lmtp_err.h \
 	imap/mupdate_err.c \
 	imap/mupdate_err.h \
 	imap/nntp_err.c \
@@ -129,6 +131,7 @@ if SERVER
 BUILT_SOURCES += \
 	imap/mupdate_err.c \
 	imap/nntp_err.c \
+	imap/lmtp_err.c \
 	imap/lmtpstats.c \
 	imap/pushstats.c \
 	lib/htmlchar.c \
@@ -257,6 +260,7 @@ else # SERVER
 EXTRA_DIST += \
     imap/mupdate_err.c \
     imap/nntp_err.c \
+    imap/lmtp_err.c \
     imap/lmtpstats.c \
     imap/pushstats.c \
     imap/rfc822_header.c \
@@ -358,6 +362,7 @@ EXTRA_DIST += \
 	imap/http_caldav.js \
 	imap/http_err.et \
 	imap/imap_err.et \
+	imap/lmtp_err.et \
 	imap/mupdate_err.et \
 	imap/nntp_err.et \
 	imap/rfc822_header.st \
@@ -890,6 +895,7 @@ imap_ctl_zoneinfo_LDADD = $(LD_UTILITY_ADD)
 
 imap_deliver_SOURCES = \
 	imap/deliver.c \
+	imap/lmtp_err.c \
 	imap/lmtpengine.c \
 	imap/lmtpstats.c \
 	imap/mutex_fake.c \
@@ -1111,6 +1117,8 @@ endif
 imap_lmtpd_SOURCES = \
 	imap/lmtpd.c \
 	imap/lmtpd.h \
+	imap/lmtp_err.c \
+	imap/lmtp_err.h \
 	imap/lmtpengine.c \
 	imap/lmtpengine.h \
 	imap/lmtpstats.c \
@@ -1287,6 +1295,9 @@ imap_unexpunge_LDADD = $(LD_UTILITY_ADD)
 # $(COMPILE_ET) creates its output files in the directory it's run from,
 # so do a tricky directory change
 imap/imap_err.h imap/imap_err.c: imap/imap_err.et $(COMPILE_ET_DEP)
+	$(AM_V_GEN)(cd $(@D) && $(COMPILE_ET) $(realpath $<))
+
+imap/lmtp_err.h imap/lmtp_err.c: imap/lmtp_err.et $(COMPILE_ET_DEP)
 	$(AM_V_GEN)(cd $(@D) && $(COMPILE_ET) $(realpath $<))
 
 imap/mupdate_err.h imap/mupdate_err.c: imap/mupdate_err.et $(COMPILE_ET_DEP)
