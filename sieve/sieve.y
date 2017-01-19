@@ -273,7 +273,7 @@ extern void sieverestart(FILE *f);
 %token <nval> NUMBER
 %token <sval> STRING
 %token IF ELSIF ELSE
-%token REJCT FILEINTO REDIRECT KEEP STOP DISCARD VACATION REQUIRE
+%token REJCT EREJECT FILEINTO REDIRECT KEEP STOP DISCARD VACATION REQUIRE
 %token MARK UNMARK FLAGS
 %token NOTIFY DENOTIFY
 %token ANYOF ALLOF EXISTS SFALSE STRUE HEADER NOT SIZE ADDRESS ENVELOPE BODY
@@ -365,6 +365,15 @@ action: REJCT STRING             { if (!parse_script->support.reject) {
                                      YYERROR; /* vu should call yyerror() */
                                    }
                                    $$ = new_command(REJCT);
+                                   $$->u.reject = $2; }
+        | EREJECT STRING         { if (!parse_script->support.ereject) {
+                                     yyerror(parse_script, "ereject MUST be enabled with \"require\"");
+                                     YYERROR;
+                                   }
+                                   if (!verify_utf8(parse_script, $2)) {
+                                     YYERROR; /* vu should call yyerror() */
+                                   }
+                                   $$ = new_command(EREJECT);
                                    $$->u.reject = $2; }
         | FILEINTO ftags STRING  { if (!parse_script->support.fileinto) {
                                      yyerror(parse_script, "fileinto MUST be enabled with \"require\"");
