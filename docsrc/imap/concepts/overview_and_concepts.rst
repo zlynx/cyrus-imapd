@@ -10,6 +10,68 @@ Access to each mailbox is controlled by each mailbox's access control list. Acce
 
 An ACL is a list of zero or more entries. Each entry has an identifier and a set of rights. The identifier specifies the user or group of users for which the entry applies. The set of rights is one or more letters or digits, each letter or digit conferring a particular privilege.
 
+Working with ACLs
+"""""""""""""""""
+
+ACLs are manipulated via these subcommands within the
+:cyrusman:`cyradm(8)` program:
+
+    * :ref:`imap-reference-manpages-systemcommands-cyradm-setaclmailbox`
+    * :ref:`imap-reference-manpages-systemcommands-cyradm-listaclmailbox`
+    * :ref:`imap-reference-manpages-systemcommands-cyradm-deleteaclmailbox`
+
+Sample ACL
+""""""""""
+
+A typical ACL is expressed like this:
+
+.. parsed-literal::
+
+    **setaclmailbox** *mailbox* *id* *rights* [*id* *rights* ...]
+
+where *mailbox* is the name of the mailbox to which the ACL is applied,
+*id* is the identifier for the user or group for which the ACL applies,
+and *rights* is a concatenated list of Access Rights from the list below.
+
+A real world example may look like this:
+
+::
+
+    setaclmailbox user/bovik/public bovik all group:users lrsp anyone lrs
+
+Here's some samples, illustrated via output from the ``listaclmailbox``
+command in :cyrusman:`cyradm(8)`:
+
+.. parsed-literal::
+
+    localhost> **listaclmamilbox tech/%**
+    tech/Commits:
+      group:tech lrswipkxtea
+      anyone lrs
+    tech/abuse:
+      group:tech lrswipkxtecda
+      anyone lrsp
+    tech/security:
+      anyone lrsp
+      group:tech lrswipkxtecda
+    tech/support:
+      group:tech lrswipkxtecda
+      anyone lrsp
+
+    localhost> **listaclmamilbox user/ted/%**
+    user/ted/Drafts:
+      ted lrswipkxtecda
+    user/ted/Sent:
+      ted lrswipkxtecda
+    user/ted/Sent Items:
+      ted lrswipkxtecda
+    user/ted/Spam:
+      anyone p
+      ted lrswipkxtecda
+    user/ted/Trash:
+      ted lrswipkxtecda
+
+
 Access Rights
 """""""""""""
 
@@ -69,6 +131,34 @@ rs
 lrsip
     The user can read and append to the mailbox, either through IMAP, or through the delivery system.
 
+Finally, there are some short-hand macros you may use:
+
+none
+    Remove any existing ACL for this identifier
+
+read (lrs)
+    Give the user read-only access to the mailbox (*lookup*, *read* and *seen*).
+
+post (lrsp)
+    Give the user read access to the mailbox, and allow the user to
+    post to the mailbox using the delivery system (*lookup*, *read*,
+    *seen* and *post*). Most delivery systems do not provide
+    authentication, so the ``p`` right usually has meaning only for the
+    "anonymous" user.
+
+append (lrsip)
+    The user can read and append to the mailbox, either through IMAP,
+    or through the delivery system.
+
+write (lrswipkxtecd)
+    The user may do pretty much anything with a mailbox, and folders
+    within it.
+
+delete (lrxte)
+    The user may list, read, delete and expunge messages and delete folders.
+
+all (lrswipkxtecda)
+    Same as write, plus admin rights.
 
 Identifiers
 """""""""""
@@ -228,21 +318,21 @@ For example, if the mailboxes
 
 ::
 
-   user.bovik
-   user.bovik.list.imap
-   user.bovik.list.info-cyrus
-   user.bovik.saved
-   user.bovik.todo
+   user/bovik
+   user/bovik/list/imap
+   user/bovik/list/info-cyrus
+   user/bovik/saved
+   user/bovik/todo
 
 exist and the quota roots
 
 ::
 
-   user.bovik
-   user.bovik.list
-   user.bovik.saved
+   user/bovik
+   user/bovik/list
+   user/bovik/saved
 
-exist, then the quota root ``user.bovik`` applies to the mailboxes ``user.bovik`` and ``user.bovik.todo``; the quota root ``user.bovik.list`` applies to the mailboxes ``user.bovik.list.imap`` and ``user.bovik.list.info-cyrus``; and the quota root ``user.bovik.saved`` applies to the mailbox ``user.bovik.saved``.
+exist, then the quota root ``user/bovik`` applies to the mailboxes ``user/bovik`` and ``user/bovik/todo``; the quota root ``user/bovik/list`` applies to the mailboxes ``user/bovik/list/imap`` and ``user/bovik/list/info-cyrus``; and the quota root ``user/bovik/saved`` applies to the mailbox ``user/bovik/saved``.
 
 Quota roots are created automatically when they are mentioned in the ``setquota`` command. Quota roots may not be deleted through the protocol, see Removing Quota Roots for instructions on how to delete them.
 
@@ -267,6 +357,44 @@ Quotas and Partitions
 """""""""""""""""""""
 
 Quota roots are independent of partitions. A single quota root can apply to mailboxes in different partitions.
+
+Quota Database
+""""""""""""""
+
+Quota information is stored either in a database (i.e. twoskip,
+skiplist) or in "quotalegacy" format, which is a filesystem hierarchy.
+This is controlled by the ``quota_db`` setting in
+:cyrusman:`imapd.conf(5)`.  Here's more about the pertinent settings:
+
+    .. include:: /imap/reference/manpages/configs/imapd.conf.rst
+        :start-after: startblob quota_db
+        :end-before: endblob quota_db
+
+    .. include:: /imap/reference/manpages/configs/imapd.conf.rst
+        :start-after: startblob quota_db_path
+        :end-before: endblob quota_db_path
+
+The :cyrusman:`cvt_cyrusdb(8)` utility may be used to convert between
+formats.  It's usage with ``quotalegacy`` is a special case, in that
+the first argument ("<old db>") will be the path to the *base* of the
+``quotalegacy`` directory structure, not to a particular file.
+
+For example, given this typical layout:
+
+::
+
+    /var/lib/imap/
+    |            /quota/
+    |                  /A/
+    |                    /user/
+    |                         /bob/
+
+The proper ``cvt_cyrusdb`` command would be:
+
+::
+
+    cvt_cyrusdb /var/lib/imap/quota quotalegacy /var/lib/imap/quotas.db twoskip
+
 
 
 New Mail Notification
