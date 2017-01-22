@@ -150,7 +150,7 @@ typedef struct sieve_send_response_context {
 
 /* build a sieve interpretor */
 sieve_interp_t *sieve_interp_alloc(void *interp_context);
-int sieve_interp_free(sieve_interp_t **interp);
+void *sieve_interp_free(sieve_interp_t **interp);
 
 /* add the callbacks for actions. undefined behavior results if these
    are called after sieve_script_parse is called! */
