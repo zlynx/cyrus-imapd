@@ -154,18 +154,15 @@ EXPORTED const char *sieve_listextensions(sieve_interp_t *i)
     return i->extensions;
 }
 
-EXPORTED void *sieve_interp_free(sieve_interp_t **interp)
+EXPORTED int sieve_interp_free(sieve_interp_t **interp)
 {
-    void *ctx = NULL;
-
     if (*interp) {
-        ctx = (*interp)->interp_context;
         free((*interp)->lastitem);
         free(*interp);
         *interp = NULL;
     }
 
-    return ctx;
+    return SIEVE_OK;
 }
 
 /* add the callbacks */
