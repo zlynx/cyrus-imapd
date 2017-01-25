@@ -1892,7 +1892,7 @@ static commandlist_t *build_denotify(int t, struct dtags *d)
     if (ret) {
         ret->u.d.comptag = d->comptags.match;
         ret->u.d.relation = d->comptags.relation;
-        ret->u.d.pattern = d->pattern; d->pattern = NULL;
+        ret->u.d.pattern = xstrdupnull(d->pattern);
         ret->u.d.priority = d->priority;
         free_dtags(d);
     }
@@ -2284,7 +2284,6 @@ static void free_dtags(struct dtags *d)
 {
     if (!d) return;
     free_comptags(&d->comptags, 0);
-    free(d->pattern);
     free(d);
 }
 
