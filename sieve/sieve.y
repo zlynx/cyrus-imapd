@@ -56,6 +56,7 @@
 #include "sieve/tree.h"
 #include "sieve/flags.h"
 #include "sieve/grammar.h"
+#include "sieve/sieve_err.h"
 
 #include "imapurl.h"
 #include "lib/gmtoff.h"
@@ -90,7 +91,7 @@ struct comptags {
     int match;
     int relation;
     char *comparator;  /* only used where comparator can be defined */
-    int index;         /* only used were index extension is defined */
+    int index;         /* only used where index extension is defined */
 };
 
 struct aetags {
@@ -211,8 +212,9 @@ static void free_stags(struct stags *s);
 
 static int verify_stringlist(sieve_script_t*, strarray_t *sl,
                              int (*verify)(sieve_script_t*, char *));
-static int verify_patternlist(sieve_script_t*,
-                              strarray_t *sl, struct comptags *c);
+static int verify_patternlist(sieve_script_t *parse_script,
+                              strarray_t *sl, struct comptags *c,
+                              int (*verify)(sieve_script_t*, char *));
 static int verify_mailbox(sieve_script_t*, char *s);
 static int verify_address(sieve_script_t*, char *s);
 static int verify_header(sieve_script_t*, char *s);
@@ -224,6 +226,7 @@ static int verify_date_part(sieve_script_t *parse_script, char *dp);
 static int verify_utf8(sieve_script_t*, char *s);
 static int verify_identifier(sieve_script_t*, char *s);
 
+static void parse_error(sieve_script_t *parse_script, int err, ...);
 void yyerror(sieve_script_t*, const char *msg);
 extern int yylex(void*, sieve_script_t*);
 extern void sieverestart(FILE *f);
@@ -279,7 +282,7 @@ extern void sieverestart(FILE *f);
 %token ADDHEADER DELETEHEADER
 
 %type <cl> commands command action elsif block
-%type <sl> utf8list optstringlist stringlist strings
+%type <sl> optstringlist stringlist strings
 %type <test> test
 %type <nval> match relmatch sizetag addrparttag copy rtags creat datepart
 %type <testl> testlist tests
@@ -350,9 +353,10 @@ elsif: /* empty */               { $$ = NULL; }
 action: REJCT STRING
                                  {
                                      if (!parse_script->support.reject) {
-                                         yyerror(parse_script,
-                                                 "reject MUST be enabled with \"require\"");
-                                         YYERROR; 
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "reject");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_utf8(parse_script, $2)) {
                                          YYERROR; /* vu should call yyerror() */
@@ -364,9 +368,10 @@ action: REJCT STRING
         | EREJECT STRING
                                  {
                                      if (!parse_script->support.ereject) {
-                                         yyerror(parse_script,
-                                                 "ereject MUST be enabled with \"require\"");
-                                         YYERROR; 
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "ereject");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_utf8(parse_script, $2)) {
                                          YYERROR; /* vu should call yyerror() */
@@ -378,9 +383,10 @@ action: REJCT STRING
         | FILEINTO ftags STRING
                                  {
                                      if (!parse_script->support.fileinto) {
-                                         yyerror(parse_script,
-                                                 "fileinto MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "fileinto");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_mailbox(parse_script, $3)) {
                                          YYERROR; /* vm should call yyerror() */
@@ -404,9 +410,10 @@ action: REJCT STRING
         | VACATION vtags STRING
                                  {
                                      if (!parse_script->support.vacation) {
-                                         yyerror(parse_script,
-                                                 "vacation MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "vacation");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (($2->mime == -1) &&
                                          !verify_utf8(parse_script, $3)) {
@@ -421,9 +428,10 @@ action: REJCT STRING
                                  {
                                      if (!(parse_script->support.imapflags ||
                                            parse_script->support.imap4flags)) {
-                                         yyerror(parse_script,
-                                                 "imap4flags MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "imap[4]flags");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!parse_script->support.variables) {
                                          verify_flaglist($3);
@@ -435,9 +443,10 @@ action: REJCT STRING
          | MARK
                                  {
                                      if (!parse_script->support.imapflags) {
-                                         yyerror(parse_script,
-                                                 "imapflags MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "imapflags");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = new_command(MARK);
                                  }
@@ -445,9 +454,10 @@ action: REJCT STRING
          | UNMARK
                                  {
                                      if (!parse_script->support.imapflags) {
-                                         yyerror(parse_script,
-                                                 "imapflags MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "imapflags");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = new_command(UNMARK);
                                  }
@@ -455,10 +465,11 @@ action: REJCT STRING
          | NOTIFY ntags
                                  {
                                      if (!parse_script->support.notify) {
-                                         yyerror(parse_script,
-                                                 "notify MUST be enabled with \"require\"");
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "notify");
                                          $$ = new_command(NOTIFY);
-                                         YYERROR;
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = build_notify(NOTIFY, canon_ntags($2));
                                  }
@@ -466,32 +477,37 @@ action: REJCT STRING
          | DENOTIFY dtags
                                  {
                                      if (!parse_script->support.notify) {
-                                         yyerror(parse_script,
-                                                 "notify MUST be enabled with \"require\"");
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "notify");
                                          $$ = new_command(DENOTIFY);
-                                         YYERROR;
+                                         YYERROR; /* pe should call yyerror() */
                                      }
-                                     $$ = build_denotify(DENOTIFY, canon_dtags($2));
+                                     $$ = build_denotify(DENOTIFY,
+                                                         canon_dtags($2));
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build denotify action");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "denotify action");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
          | INCLUDE itags STRING
                                  {
                                      if (!parse_script->support.include) {
-                                         yyerror(parse_script,
-                                                 "include MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "include");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      int i;
                                      for (i = 0; $3[i] != '\0'; i++) {
                                          if ($3[i] == '/') {
-                                             yyerror(parse_script,
-                                                     "included script name must not contain slash");
-                                             YYERROR;
+                                             parse_error(parse_script,
+                                                         SIEVE_INVALID_VALUE,
+                                                         "script-name");
+                                             YYERROR; /* pe should call yyerror() */
                                              break;
                                          }
                                      }
@@ -501,9 +517,10 @@ action: REJCT STRING
          | RETURN
                                  {
                                      if (!parse_script->support.include) {
-                                         yyerror(parse_script,
-                                                 "include MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "include");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = new_command(RETURN);
                                  }
@@ -511,9 +528,10 @@ action: REJCT STRING
          | SET stags STRING STRING
                                  {
                                      if (!parse_script->support.variables) {
-                                         yyerror(parse_script,
-                                                 "variables MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "variables");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_identifier(parse_script, $3)) {
                                          YYERROR; /* vi should call yyerror() */
@@ -527,9 +545,10 @@ action: REJCT STRING
         | ADDHEADER ahtags STRING STRING
                                  {
                                      if (!parse_script->support.editheader) {
-                                         yyerror(parse_script,
-                                                 "editheader MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "editheader");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_header(parse_script, $3)) {
                                          YYERROR; /* vh should call yyerror() */
@@ -544,12 +563,10 @@ action: REJCT STRING
         | DELETEHEADER htags STRING optstringlist
                                  {
                                      if (!parse_script->support.editheader) {
-                                         yyerror(parse_script,
-                                                 "editheader MUST be enabled with \"require\"");
-                                         YYERROR;
-                                     }
-                                     else if (!verify_header(parse_script, $3)) {
-                                         YYERROR; /* vh should call yyerror() */
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "editheader");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else if (!strcasecmp("Received", $3) ||
                                               !strcasecmp("Auto-Submitted", $3)) {
@@ -558,12 +575,17 @@ action: REJCT STRING
                                                  " or Auto-Submitted headers");
                                          YYERROR;
                                      }
-                                     else if (!verify_stringlist(parse_script,
-                                                                 $4, verify_utf8)) {
-                                         YYERROR; /* vu should call yyerror() */
+                                     else if (!verify_header(parse_script, $3)) {
+                                         YYERROR; /* vh should call yyerror() */
+                                     }
+                                     $2 = canon_comptags($2);
+
+                                     if (!verify_patternlist(parse_script,
+                                                             $4, $2,
+                                                             verify_utf8)) {
+                                         YYERROR; /* vp should call yyerror() */
                                      }
 
-                                     $2 = canon_comptags($2);
                                      $$ = build_deleteheader(DELETEHEADER,
                                                              $2, $3, $4);
                                  }
@@ -582,19 +604,19 @@ flagtags: /* empty */            { $$ = NULL; }
         | flagtags STRING
                                  {
                                      if (!(parse_script->support.imap4flags)) {
-                                         yyerror(parse_script,
-                                                 "imap4flags MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "imap4flags");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if ($1) {
-                                         yyerror(parse_script,
-                                                 "duplicate variablename");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_ARG,
+                                                     "variablename");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!is_identifier($2)) {
-                                         yyerror(parse_script,
-                                                 "variablename must be a valid identifier");
-                                         YYERROR;
+                                         YYERROR; /* id should call yyerror() */
                                      }
                                      $$ = $2;
                                  }
@@ -604,27 +626,30 @@ stags: /* empty */               { $$ = new_stags(); }
         | stags mod40
                                  {
                                      if ($$->mod40) {
-                                         yyerror(parse_script,
-                                                 "duplicate mod40 (:lower or :upper)");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "precedence 40 modifier");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->mod40 = $2;
                                  }
         | stags mod30
                                  {
                                      if ($$->mod30) {
-                                         yyerror(parse_script,
-                                                 "duplicate mod30 (:lowerfirst or :upperfirst)");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "precedence 30 modifier");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->mod30 = $2;
                                  }
         | stags mod20
                                  {
                                      if ($$->mod20) {
-                                         yyerror(parse_script,
-                                                 "duplicate :quotewildcard");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "precedence 20 modifier");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->mod20 = $2;
                                  }
@@ -656,9 +681,10 @@ stags: /* empty */               { $$ = new_stags(); }
         | stags mod10
                                  {
                                      if ($$->mod10) {
-                                         yyerror(parse_script,
-                                                 "duplicate :length");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "precedence 10 modifier");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->mod10 = $2;
                                  }
@@ -679,34 +705,39 @@ itags: /* empty */               { $$ = new_itags(); }
         | itags PERSONAL
                                  {
                                      if ($$->location != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate location (:personal or :global)");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "location");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->location = PERSONAL;
                                  }
         | itags GLOBAL
                                  {
                                      if ($$->location != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate location (:personal or :global)");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "location");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->location = GLOBAL;
                                  }
         | itags ONCE
                                  {
                                      if ($$->once != -1) {
-                                         yyerror(parse_script, "duplicate :once");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":once");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->once = 1;
                                  }
         | itags OPTIONAL
                                  { if ($$->optional != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate :optional");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":optional");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->optional = 1;
                                  }
@@ -716,45 +747,50 @@ ntags: /* empty */               { $$ = new_ntags(); }
         | ntags ID STRING
                                  {
                                      if ($$->id != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate :method");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":id");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->id = $3;
                                  }
         | ntags METHOD STRING
                                  {
                                      if ($$->method != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate :method");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":method");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->method = $3;
                                  }
         | ntags OPTIONS stringlist
                                  {
                                      if ($$->options != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate :options");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":options");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->options = $3;
                                  }
         | ntags priority
                                  {
                                      if ($$->priority != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate :priority");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "priority");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->priority = $2;
                                  }
         | ntags MESSAGE STRING
                                  {
                                      if ($$->message != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate :message");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":message");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->message = $3;
                                  }
@@ -764,18 +800,20 @@ dtags: /* empty */               { $$ = new_dtags(); }
         | dtags priority
                                  {
                                      if ($$->priority != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate priority level");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "priority");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->priority = $2;
                                  }
         | dtags match STRING
                                  {
                                      if ($$->comptags.match != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate match type tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "match-type");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$->comptags.match = $2;
                                      $$->pattern = $3;
@@ -783,7 +821,8 @@ dtags: /* empty */               { $$ = new_dtags(); }
                                      strarray_t sa = STRARRAY_INITIALIZER;
                                      strarray_appendm(&sa, $3);
                                      if (!verify_patternlist(parse_script, &sa,
-                                                             &($$->comptags))) {
+                                                             &($$->comptags),
+                                                             NULL)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
                                      strarray_fini(&sa);
@@ -792,9 +831,10 @@ dtags: /* empty */               { $$ = new_dtags(); }
                                  {
                                      $$ = $1;
                                      if ($$->comptags.match != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate comparator type tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "match-type");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else {
                                          $$->comptags.match = $2;
@@ -816,32 +856,36 @@ vtags: /* empty */               { $$ = new_vtags(); }
         | vtags DAYS NUMBER
                                  {
                                      if ($$->seconds != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate :days or :seconds");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "period");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->seconds = $3 * DAY2SEC;
                                  }
         | vtags SECONDS NUMBER
                                  {
                                      if (!parse_script->support.vacation_seconds) {
-                                         yyerror(parse_script,
-                                                 "vacation-seconds not required");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "vacation-seconds");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if ($$->seconds != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate :days or :seconds");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "period");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$->seconds = $3;
                                  }
         | vtags ADDRESSES stringlist
                                  {
                                      if ($$->addresses != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate :addresses");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":addresses");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_stringlist(parse_script, $3,
                                                             verify_address)) {
@@ -852,9 +896,10 @@ vtags: /* empty */               { $$ = new_vtags(); }
         | vtags SUBJECT STRING
                                  {
                                      if ($$->subject != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate :subject");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":subject");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_utf8(parse_script, $3)) {
                                          YYERROR; /* vu should call yyerror() */
@@ -864,9 +909,10 @@ vtags: /* empty */               { $$ = new_vtags(); }
         | vtags FROM STRING
                                  {
                                      if ($$->from != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate :from");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":from");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_address(parse_script, $3)) {
                                          YYERROR; /* va should call yyerror() */
@@ -876,9 +922,10 @@ vtags: /* empty */               { $$ = new_vtags(); }
         | vtags HANDLE STRING
                                  {
                                      if ($$->handle != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate :handle");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":handle");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_utf8(parse_script, $3)) {
                                          YYERROR; /* vu should call yyerror() */
@@ -888,20 +935,12 @@ vtags: /* empty */               { $$ = new_vtags(); }
         | vtags MIME
                                  {
                                      if ($$->mime != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate :mime");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":mime");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$->mime = MIME;
-                                 }
-        ;
-
-utf8list: stringlist
-                                 {
-                                     if (!verify_stringlist(parse_script,
-                                                            $1, verify_utf8)) {
-                                         YYERROR; /* vu should call yyerror() */
-                                     }
                                  }
         ;
 
@@ -936,7 +975,7 @@ test:     ANYOF testlist         { $$ = new_test(ANYOF); $$->u.tl = $2; }
         | SFALSE                 { $$ = new_test(SFALSE); }
         | STRUE                  { $$ = new_test(STRUE); }
 
-        | HEADER htags stringlist utf8list
+        | HEADER htags stringlist stringlist
                                  {
                                      if (!verify_stringlist(parse_script,
                                                             $3, verify_header)) {
@@ -945,37 +984,46 @@ test:     ANYOF testlist         { $$ = new_test(ANYOF); $$->u.tl = $2; }
                                      $2 = canon_comptags($2);
 
                                      if (!verify_patternlist(parse_script,
-                                                             $4, $2)) {
+                                                             $4, $2,
+                                                             verify_utf8)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_header(HEADER, $2, $3, $4);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build header test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "header test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
-        | STRINGT strtags utf8list utf8list
+        | STRINGT strtags stringlist stringlist
                                  {
                                      if (!parse_script->support.variables) {
-                                         yyerror(parse_script,
-                                                 "variables MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "variables");
+                                         YYERROR; /* pe should call yyerror() */
+                                     }
+                                     if (!verify_stringlist(parse_script,
+                                                            $3, verify_utf8)) {
+                                         YYERROR; /* vu should call yyerror() */
                                      }
                                      $2 = canon_comptags($2);
 
                                      if (!verify_patternlist(parse_script,
-                                                             $4, $2)) {
+                                                             $4, $2,
+                                                             verify_utf8)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_header(STRINGT, $2, $3, $4);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build string test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "string test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
@@ -983,17 +1031,19 @@ test:     ANYOF testlist         { $$ = new_test(ANYOF); $$->u.tl = $2; }
    but defining the grammar this way results in a shift/reduce conflict.
    Therefore, we have to flatten the grammar into two rules.
 */
-        | HASFLAG hftags stringlist utf8list
+        | HASFLAG hftags stringlist stringlist
                                  {
                                      if (!parse_script->support.imap4flags) {
-                                         yyerror(parse_script,
-                                                 "imap4flags MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "imap4flags");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!parse_script->support.variables) {
-                                         yyerror(parse_script,
-                                                 "variables MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "variables");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_stringlist(parse_script, $3,
                                                             verify_identifier)) {
@@ -1002,37 +1052,42 @@ test:     ANYOF testlist         { $$ = new_test(ANYOF); $$->u.tl = $2; }
                                      $2 = canon_comptags($2);
 
                                      if (!verify_patternlist(parse_script,
-                                                             $4, $2)) {
+                                                             $4, $2,
+                                                             verify_utf8)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_header(HASFLAG, $2, $3, $4);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build hasflag test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "hasflag test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
-        | HASFLAG hftags utf8list 
+        | HASFLAG hftags stringlist
                                  {
                                      if (!parse_script->support.imap4flags) {
-                                         yyerror(parse_script,
-                                                 "imap4flags MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "imap4flags");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $2 = canon_comptags($2);
 
                                      if (!verify_patternlist(parse_script,
-                                                             $3, $2)) {
+                                                             $3, $2,
+                                                             verify_utf8)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_header(HASFLAG, $2, NULL, $3);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build hasflag test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "hasflag test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
@@ -1045,24 +1100,27 @@ test:     ANYOF testlist         { $$ = new_test(ANYOF); $$->u.tl = $2; }
                                      $2 = canon_aetags($2);
 
                                      if (!verify_patternlist(parse_script, $4,
-                                                             &($2->comptags))) {
+                                                             &($2->comptags),
+                                                             NULL)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_address(ADDRESS, $2, $3, $4);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build address test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "address test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
         | ENVELOPE etags stringlist stringlist
                                  {
                                      if (!parse_script->support.envelope) {
-                                         yyerror(parse_script,
-                                                 "envelope MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "envelope");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_stringlist(parse_script, $3,
                                                             verify_envelope)) {
@@ -1071,37 +1129,42 @@ test:     ANYOF testlist         { $$ = new_test(ANYOF); $$->u.tl = $2; }
                                      $2 = canon_aetags($2);
 
                                      if (!verify_patternlist(parse_script, $4,
-                                                             &($2->comptags))) {
+                                                             &($2->comptags),
+                                                             NULL)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_address(ENVELOPE, $2, $3, $4);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build envelope test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "envelope test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
-        | BODY btags utf8list
+        | BODY btags stringlist
                                  {
                                      if (!parse_script->support.body) {
-                                         yyerror(parse_script,
-                                                 "body MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "body");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $2 = canon_btags($2);
 
                                      if (!verify_patternlist(parse_script, $3,
-                                                             &($2->comptags))) {
+                                                             &($2->comptags),
+                                                             verify_utf8)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_body(BODY, $2, $3);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build body test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "body test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
@@ -1112,9 +1175,10 @@ test:     ANYOF testlist         { $$ = new_test(ANYOF); $$->u.tl = $2; }
         | DATE dttags STRING datepart stringlist
                                  {
                                      if (!parse_script->support.date) {
-                                         yyerror(parse_script,
-                                                 "date MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "date");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (!verify_header(parse_script, $3)) {
                                          YYERROR; /* vh should call yyerror() */
@@ -1122,123 +1186,138 @@ test:     ANYOF testlist         { $$ = new_test(ANYOF); $$->u.tl = $2; }
                                      $2 = canon_dttags($2);
 
                                      if (!verify_patternlist(parse_script, $5,
-                                                             &($2->comptags))) {
+                                                             &($2->comptags),
+                                                             NULL)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_date(DATE, $2, $3, $4, $5);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build date test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "date test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
         | CURRENTDATE cdtags datepart stringlist
                                  {
                                      if (!parse_script->support.date) {
-                                         yyerror(parse_script,
-                                                 "date MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "date");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $2 = canon_dttags($2);
 
                                      if (!verify_patternlist(parse_script, $4,
-                                                             &($2->comptags))) {
+                                                             &($2->comptags),
+                                                             NULL)) {
                                          YYERROR; /* vp should call yyerror() */
                                      }
 
                                      $$ = build_date(CURRENTDATE,
                                                      $2, NULL, $3, $4);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build currentdate test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "currentdate test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
         | MAILBOXEXISTS stringlist
                                  {
                                      if (!parse_script->support.mailbox) {
-                                         yyerror(parse_script,
-                                                 "mailbox MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "mailbox");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
 
                                      $$ = build_mailboxtest(MAILBOXEXISTS, NULL,
                                                             NULL, NULL, $2);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build mailbox test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "mailboxexists test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
         | METADATA mtags STRING STRING stringlist
                                  {
                                      if (!parse_script->support.mboxmetadata) {
-                                         yyerror(parse_script,
-                                                 "mboxmetadata MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "mboxmetadata");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
 
                                      $$ = build_mailboxtest(METADATA,
                                                             $2, $3, $4, $5);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build metadata test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "metadata test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
         | METADATAEXISTS STRING stringlist
                                  {
                                      if (!parse_script->support.mboxmetadata) {
-                                         yyerror(parse_script,
-                                                 "mboxmetadata MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "mboxmetadata");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
 
                                      $$ = build_mailboxtest(METADATAEXISTS,
                                                             NULL, $2, NULL, $3);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build metadataexists test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "metadataexists test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
         | SERVERMETADATA mtags STRING stringlist
                                  {
                                      if (!parse_script->support.servermetadata) {
-                                         yyerror(parse_script,
-                                                 "servermetadata MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "servermetadata");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
 
                                      $$ = build_mailboxtest(SERVERMETADATA,
                                                             $2, NULL, $3, $4);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build servermetadata test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "servermetadata test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
         | SERVERMETADATAEXISTS stringlist
                                  {
                                      if (!parse_script->support.servermetadata) {
-                                         yyerror(parse_script,
-                                                 "servermetadata MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "servermetadata");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
 
                                      $$ = build_mailboxtest(SERVERMETADATAEXISTS,
                                                             NULL, NULL, NULL, $2);
                                      if ($$ == NULL) {
-                                         yyerror(parse_script,
-                                                 "unable to build servermetadataexists test");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_BUILD_FAILURE,
+                                                     "servermetadataexists test");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                  }
 
@@ -1250,9 +1329,10 @@ atags: /* empty */               { $$ = new_aetags(); }
                                  {
                                      $$ = $1;
                                      if ($$->addrtag != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate or conflicting address part tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "address-part");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->addrtag = $2;
                                  }
@@ -1265,9 +1345,10 @@ etags: /* empty */               { $$ = new_aetags(); }
                                  {
                                      $$ = $1;
                                      if ($$->addrtag != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate or conflicting address part tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "address-part");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->addrtag = $2;
                                  }
@@ -1281,9 +1362,10 @@ comptags: match
                                  {
                                      struct comptags *ctags = $<ctag>0;
                                      if (ctags->match != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate match-type tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "match-type");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else ctags->match = $1;
                                  }
@@ -1291,9 +1373,10 @@ comptags: match
                                  {
                                      struct comptags *ctags = $<ctag>0;
                                      if (ctags->match != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate match-type tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "match-type");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else {
                                          ctags->match = $1;
@@ -1308,15 +1391,17 @@ comptags: match
                                  {
                                      struct comptags *ctags = $<ctag>0;
                                      if (ctags->comparator != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate comparator tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":comparator");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else if (!strcmp($2, "i;ascii-numeric") &&
                                               !parse_script->support.i_ascii_numeric) {
-                                         yyerror(parse_script,
-                                                 "comparator-i;ascii-numeric MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "comparator-i;ascii-numeric");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else ctags->comparator = $2;
                                  }
@@ -1329,38 +1414,44 @@ idxtags: INDEX NUMBER
                                  {
                                      struct comptags *ctags = $<ctag>0;
                                      if (!parse_script->support.index) {
-                                         yyerror(parse_script,
-                                                 "index MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "index");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (ctags->index != 0) {
-                                         yyerror(parse_script,
-                                                 "duplicate index argument");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":index");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if ($2 <= 0) {
-                                         yyerror(parse_script,
-                                                 "invalid index value");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_INVALID_VALUE,
+                                                     ":index");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else ctags->index = $2;
                                  }
         | LAST
                                  { struct comptags *ctags = $<ctag>0;
                                      if (!parse_script->support.index) {
-                                         yyerror(parse_script,
-                                                 "index MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "index");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if (ctags->index == 0) {
-                                         yyerror(parse_script,
-                                                 "index argument is required");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_TAG,
+                                                     ":index");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else if (ctags->index < 0) {
-                                         yyerror(parse_script,
-                                                 "duplicate last argument");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":last");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else ctags->index *= -1;
                                  }
@@ -1388,9 +1479,10 @@ btags: /* empty */               { $$ = new_btags(); }
                                  {
                                      $$ = $1;
                                      if ($$->transform != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate or conflicting transform tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "transform");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->transform = RAW;
                                  }
@@ -1398,9 +1490,10 @@ btags: /* empty */               { $$ = new_btags(); }
                                  {
                                      $$ = $1;
                                      if ($$->transform != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate or conflicting transform tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "transform");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->transform = TEXT;
                                  }
@@ -1408,9 +1501,10 @@ btags: /* empty */               { $$ = new_btags(); }
                                  {
                                      $$ = $1;
                                      if ($$->transform != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate or conflicting transform tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     "transform");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else {
                                          $$->transform = CONTENT;
@@ -1425,8 +1519,11 @@ dttags: /* empty */              { $$ = new_dttags(); }
                                  {
                                      $$ = $1;
                                      if ($$->zonetag != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate zone tag"); YYERROR; }
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":originalzone");
+                                         YYERROR; /* pe should call yyerror() */
+                                     }
                                      else $$->zonetag = ORIGINALZONE;
                                  }
         | dttags zone
@@ -1446,9 +1543,10 @@ zone: ZONE STRING
                                  {
                                      struct dttags *dttags = $<dttag>0;
                                      if (dttags->zonetag != -1) {
-                                         yyerror(parse_script,
-                                                 "duplicate zone tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":zone");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else if (verify_zone(parse_script, $2) == -1) {
                                          YYERROR; /*vr called yyerror()*/
@@ -1475,18 +1573,20 @@ addrparttag: ALL                 { $$ = ALL; }
         | USER
                                  {
                                      if (!parse_script->support.subaddress) {
-                                         yyerror(parse_script,
-                                                 "subaddress MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "subaddress");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = USER;
                                  }
         | DETAIL
                                  {
                                      if (!parse_script->support.subaddress) {
-                                         yyerror(parse_script,
-                                                 "subaddress MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "subaddress");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = DETAIL;
                                  }
@@ -1497,9 +1597,10 @@ match: IS                        { $$ = IS; }
         | REGEX
                                  {
                                      if (!parse_script->support.regex) {
-                                         yyerror(parse_script,
-                                                 "regex MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "regex");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = REGEX;
                                  }
@@ -1508,18 +1609,20 @@ match: IS                        { $$ = IS; }
 relmatch: COUNT
                                  {
                                      if (!parse_script->support.relational) {
-                                         yyerror(parse_script,
-                                                 "relational MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "relational");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = COUNT;
                                  }
         | VALUE
                                  {
                                      if (!parse_script->support.relational) {
-                                         yyerror(parse_script,
-                                                 "relational MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "relational");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = VALUE;
                                  }
@@ -1533,9 +1636,10 @@ sizetag: OVER                    { $$ = OVER; }
 copy: COPY
                                  {
                                      if (!parse_script->support.copy) {
-                                         yyerror(parse_script,
-                                                 "copy MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "copy");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = 1;
                                  }
@@ -1544,9 +1648,10 @@ copy: COPY
 creat:  CREATE
                                  {
                                      if (!parse_script->support.mailbox) {
-                                         yyerror(parse_script,
-                                                 "mailbox MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "mailbox");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      $$ = 1;
                                  }
@@ -1557,9 +1662,10 @@ ftags: /* empty */               { $$ = new_ftags(); }
                                  {
                                      $$ = $1;
                                      if ($$->copy) {
-                                         yyerror(parse_script,
-                                                 "duplicate copy tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":copy");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->copy = $2;
                                  }
@@ -1567,32 +1673,34 @@ ftags: /* empty */               { $$ = new_ftags(); }
                                  {
                                      $$ = $1;
                                      if ($$->create) {
-                                         yyerror(parse_script,
-                                                 "duplicate create tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":create");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$->create = $2;
                                  }
         | ftags FLAGS stringlist
                                  {
-                                     $$ = $1;
                                      if (!parse_script->support.imap4flags) {
-                                         yyerror(parse_script,
-                                                 "imap4flags MUST be enabled with \"require\"");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_MISSING_REQUIRE,
+                                                     "imap4flags");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      if ($$->flags != NULL) {
-                                         yyerror(parse_script,
-                                                 "duplicate flags tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":flags");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
-                                     else {
-                                         if (!parse_script->support.variables) {
-                                             verify_flaglist($3);
-                                         }
-                                         if (!$3->count) strarray_add($3, "");
-                                         $$->flags = $3;
+
+                                     $$ = $1;
+                                     if (!parse_script->support.variables) {
+                                         verify_flaglist($3);
                                      }
+                                     if (!$3->count) strarray_add($3, "");
+                                     $$->flags = $3;
                                  }
         ;
 
@@ -1601,9 +1709,10 @@ rtags: /* empty */               { $$ = 0; }
                                  {
                                      $$ = $1;
                                      if ($$) {
-                                         yyerror(parse_script,
-                                                 "duplicate copy tag");
-                                         YYERROR;
+                                         parse_error(parse_script,
+                                                     SIEVE_DUPLICATE_TAG,
+                                                     ":copy");
+                                         YYERROR; /* pe should call yyerror() */
                                      }
                                      else $$ = $2;
                                  }
@@ -1631,6 +1740,16 @@ void yyerror(sieve_script_t *parse_script, const char *msg)
                                  parse_script->interp.interp_context,
                                  parse_script->script_context);
     }
+}
+
+static void parse_error(sieve_script_t *parse_script, int err, ...)
+{
+    va_list args;
+
+    va_start(args, err);
+    vsnprintf(parse_script->sieveerr, ERR_BUF_SIZE, error_message(err), args);
+    yyerror(parse_script, parse_script->sieveerr);
+    va_end(args);
 }
 
 static char *check_reqs(sieve_script_t *parse_script, strarray_t *sa)
@@ -2455,11 +2574,14 @@ static int verify_regexs(sieve_script_t *parse_script __attribute__((unused)),
 }
 #endif /* ENABLE_REGEX */
 
-static int verify_patternlist(sieve_script_t *parse_script, strarray_t *sl,
-                              struct comptags *c)
+static int verify_patternlist(sieve_script_t *parse_script,
+                              strarray_t *sa, struct comptags *c,
+                              int (*verify)(sieve_script_t*, char *))
 {
+    if (verify && !verify_stringlist(parse_script, sa, verify)) return 0;
+
     return (c->match == REGEX) ?
-        verify_regexs(parse_script, sl, c->comparator) : 1;
+        verify_regexs(parse_script, sa, c->comparator) : 1;
 }
 
 /*
