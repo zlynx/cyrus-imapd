@@ -1537,7 +1537,7 @@ static struct aetags *new_aetags(void)
 static struct aetags *canon_aetags(struct aetags *ae)
 {
     if (ae->addrtag == -1) { ae->addrtag = ALL; }
-    ae->comptags = canon_comptags(ae->comptags ? ae->comptags : new_comptags());
+    canon_comptags(ae->comptags);
     return ae;
 }
 
@@ -1585,7 +1585,7 @@ static struct htags *new_htags(void)
 
 static struct htags *canon_htags(struct htags *h)
 {
-    h->comptags = canon_comptags(h->comptags ? h->comptags : new_comptags());
+    canon_comptags(h->comptags);
     return h;
 }
 
@@ -1618,7 +1618,7 @@ static struct btags *canon_btags(struct btags *b)
         }
     }
     if (b->offset == -1) { b->offset = 0; }
-    b->comptags = canon_comptags(b->comptags ? b->comptags : new_comptags());
+    canon_comptags(b->comptags);
     return b;
 }
 
@@ -1709,7 +1709,7 @@ static struct dttags *canon_dttags(struct dttags *dt)
         dt->zone = xstrdup(zone);
         dt->zonetag = ZONE;
     }
-    dt->comptags = canon_comptags(dt->comptags ? dt->comptags : new_comptags());
+    canon_comptags(dt->comptags);
     return dt;
 }
 
@@ -1823,7 +1823,7 @@ static struct dhtags *new_dhtags(void)
 
 static struct dhtags *canon_dhtags(struct dhtags *dh)
 {
-    dh->comptags = canon_comptags(dh->comptags ? dh->comptags : new_comptags());
+    canon_comptags(dh->comptags);
     return dh;
 }
 
