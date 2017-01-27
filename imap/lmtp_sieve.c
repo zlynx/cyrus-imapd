@@ -476,6 +476,11 @@ static int sieve_redirect(void *ac,
         else m = mdata->m;
     }
 
+    if (rc->is_ext_list) {
+        syslog(LOG_NOTICE, "XXX  Need to expand addressbook");
+        return SIEVE_FAIL;
+    }
+
     res = send_forward(rc->addr, m->return_path, m->data);
 
     if (sd->edited_header) cleanup_special_delivery(mdata);
@@ -488,7 +493,8 @@ static int sieve_redirect(void *ac,
         syslog(LOG_INFO, "sieve redirected: %s to: %s",
                m->id ? m->id : "<nomsgid>", rc->addr);
         if (config_auditlog)
-            syslog(LOG_NOTICE, "auditlog: redirect sessionid=<%s> message-id=%s target=<%s>",
+            syslog(LOG_NOTICE,
+                   "auditlog: redirect sessionid=<%s> message-id=%s target=<%s>",
                    session_id(), m->id ? m->id : "<nomsgid>", rc->addr);
         return SIEVE_OK;
     } else {
