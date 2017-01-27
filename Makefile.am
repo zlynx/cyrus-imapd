@@ -1348,7 +1348,6 @@ lib_libcyrus_la_SOURCES = \
 	lib/auth_unix.c \
 	lib/bitvector.c \
 	lib/bsearch.c \
-	lib/byteorder64.c \
 	lib/charset.c \
 	lib/command.c \
 	lib/cyrusdb.c \
@@ -1413,6 +1412,7 @@ lib_libcyrus_min_la_SOURCES = \
 	lib/arrayu64.c \
 	lib/assert.c \
 	lib/bufarray.c \
+	lib/byteorder64.c \
 	lib/hash.c \
 	lib/hashu64.c \
 	lib/libconfig.c \
