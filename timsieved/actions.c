@@ -190,8 +190,9 @@ int capabilities(struct protstream *conn, sasl_conn_t *saslconn,
                     config_mupdate_server ? " (Murder)" : "");
     } else {
         /* IMAP_ENUM_SERVERINFO_OFF */
-        prot_printf(conn, "\"IMPLEMENTATION\" \"ManageSieve\"\r\n");
+        prot_puts(conn, "\"IMPLEMENTATION\" \"ManageSieve\"\r\n");
     }
+    prot_puts(conn, "\"VERSION\" \"1.0\"\r\n");
 
     /* SASL */
     if (!sieved_tls_required && (!authenticated || sasl_ssf) &&
@@ -212,11 +213,13 @@ int capabilities(struct protstream *conn, sasl_conn_t *saslconn,
     }
 
     if (tls_enabled() && !starttls_done && !authenticated) {
-        prot_printf(conn, "\"STARTTLS\"\r\n");
+        prot_puts(conn, "\"STARTTLS\"\r\n");
     }
-    prot_printf(conn, "\"UNAUTHENTICATE\"\r\n");
 
-    prot_printf(conn,"OK\r\n");
+    if (authenticated) prot_printf(conn, "\"OWNER\" \"%s\"\r\n", sieved_userid);
+    prot_puts(conn, "\"UNAUTHENTICATE\"\r\n");
+
+    prot_puts(conn,"OK\r\n");
 
     return TIMSIEVE_OK;
 }
@@ -536,7 +539,7 @@ int deletescript(struct protstream *conn, const struct buf *name)
   result = unlink(path);
 
   if (result != 0) {
-      if (result == ENOENT)
+      if (errno == ENOENT)
           prot_printf(conn, "NO (NONEXISTENT) \"Script %s does not exist.\"\r\n", name->s);
       else
           prot_printf(conn,"NO \"Error deleting script\"\r\n");
@@ -678,6 +681,68 @@ int setactive(struct protstream *conn, const struct buf *name)
 
     prot_printf(conn,"OK\r\n");
     return TIMSIEVE_OK;
+}
+
+/* rename a sieve script */
+int renamescript(struct protstream *conn,
+                 const struct buf *oldname, const struct buf *newname)
+{
+  int result;
+  char oldpath[1024], newpath[1024];
+
+  result = scriptname_valid(oldname);
+  if (result!=TIMSIEVE_OK)
+  {
+      prot_printf(conn,"NO \"Invalid old script name\"\r\n");
+      return result;
+  }
+  result = scriptname_valid(newname);
+  if (result!=TIMSIEVE_OK)
+  {
+      prot_printf(conn,"NO \"Invalid new script name\"\r\n");
+      return result;
+  }
+
+  if (exists(newname->s)==TRUE) {
+    prot_printf(conn, "NO (ALREADYEXISTS) \"Script %s already exists.\"\r\n",
+                newname->s);
+    return TIMSIEVE_EXISTS;
+  }
+
+  snprintf(oldpath, 1023, "%s.script", oldname->s);
+  snprintf(newpath, 1023, "%s.script", newname->s);
+
+  result = rename(oldpath, newpath);
+
+  if (result != 0) {
+      if (errno== ENOENT)
+          prot_printf(conn, "NO (NONEXISTENT) \"Script %s does not exist.\"\r\n",
+                      oldname->s);
+      else
+          prot_printf(conn,"NO \"Error renaming script\"\r\n");
+      return TIMSIEVE_FAIL;
+  }
+
+  snprintf(oldpath, 1023, "%s.bc", oldname->s);
+  snprintf(newpath, 1023, "%s.bc", newname->s);
+
+  result = rename(oldpath, newpath);
+
+  if (result != 0) {
+      prot_printf(conn,"NO \"Error renaming bytecode\"\r\n");
+      return TIMSIEVE_FAIL;
+  }
+
+  if (isactive(oldname->s)) {
+    result = setactive(conn, newname);
+  }
+  else {
+    prot_printf(conn,"OK\r\n");
+    result = TIMSIEVE_OK;
+  }
+
+  if (result == TIMSIEVE_OK) sync_log_sieve(sieved_userid);
+  return result;
 }
 
 int cmd_havespace(struct protstream *conn, const struct buf *sieve_name, unsigned long num)
