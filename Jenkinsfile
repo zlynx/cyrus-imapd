@@ -6,10 +6,18 @@ pipeline {
                 echo 'Building..'
             }
         }
-        stage('Test') {
+
+        stage('Smoke Test') {
             steps {
                 echo 'Testing..'
             }
+
+        stage('Cassandane tests') {
+            steps {
+                echo 'Testing..'
+            }
+
+
         }
     }
 }
