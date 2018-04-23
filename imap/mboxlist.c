@@ -2659,7 +2659,8 @@ static int racl_cb(void *rock,
                    size_t datalen __attribute__((unused)))
 {
     struct raclrock *raclrock = (struct raclrock *)rock;
-    strarray_appendm(raclrock->list, xstrndup(key + raclrock->prefixlen, keylen - raclrock->prefixlen));
+    strarray_appendm(raclrock->list, xstrndup(key + raclrock->prefixlen,
+                                              keylen - raclrock->prefixlen));
     return 0;
 }
 
@@ -2682,19 +2683,22 @@ EXPORTED int mboxlist_usermboxtree(const char *userid, mboxlist_cb *proc,
         /* we only need to look inside the prefix still, but we keep the length
          * in raclrock pointing to the start of the mboxname part of the key so
          * we get correct names in matches */
-        r = cyrusdb_foreach(mbdb, buf.s, buf.len, NULL, racl_cb, &raclrock, NULL);
+        r = cyrusdb_foreach(mbdb, buf.s, buf.len,
+                            NULL, racl_cb, &raclrock, NULL);
         buf_reset(&buf);
 
         /* shared items */
         mboxlist_racl_key(0, userid, NULL, &buf);
         raclrock.prefixlen = buf.len;
-        if (!r) r = cyrusdb_foreach(mbdb, buf.s, buf.len, NULL, racl_cb, &raclrock, NULL);
+        if (!r) r = cyrusdb_foreach(mbdb, buf.s, buf.len, NULL,
+                                    racl_cb, &raclrock, NULL);
 
         /* XXX - later we need to sort the array when we've added groups */
         int i;
         for (i = 0; !r && i < strarray_size(&matches); i++) {
             const char *mboxname = strarray_nth(&matches, i);
-            r = cyrusdb_forone(mbdb, mboxname, strlen(mboxname), allmbox_p, allmbox_cb, &mbrock, 0);
+            r = cyrusdb_forone(mbdb, mboxname, strlen(mboxname),
+                               allmbox_p, allmbox_cb, &mbrock, 0);
         }
         buf_free(&buf);
         strarray_fini(&matches);

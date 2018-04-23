@@ -101,7 +101,8 @@ typedef struct mboxlist_entry mbentry_t;
 
 mbentry_t *mboxlist_entry_create();
 
-char *mbentry_metapath(const struct mboxlist_entry *mbentry, int metatype, int isnew);
+char *mbentry_metapath(const struct mboxlist_entry *mbentry,
+                       int metatype, int isnew);
 char *mbentry_datapath(const struct mboxlist_entry *mbentry, uint32_t);
 
 int mboxlist_parse_entry(mbentry_t **mbentryptr,
@@ -224,7 +225,8 @@ int mboxlist_findall(struct namespace *namespace,
                      findall_cb *proc, void *rock);
 int mboxlist_findallmulti(struct namespace *namespace,
                           const strarray_t *patterns, int isadmin,
-                          const char *userid, const struct auth_state *auth_state,
+                          const char *userid,
+                          const struct auth_state *auth_state,
                           findall_cb *proc, void *rock);
 int mboxlist_findone(struct namespace *namespace,
                      const char *intname, int isadmin,
@@ -243,16 +245,20 @@ typedef int mboxlist_cb(const mbentry_t *mbentry, void *rock);
 
 int mboxlist_visible(const char *userid, const struct auth_state *auth_state,
                      mboxlist_cb *proc, void *rock, int incdel);
-int mboxlist_allmbox(const char *prefix, mboxlist_cb *proc, void *rock, int incdel);
-#define MBOXTREE_TOMBSTONES (1<<0)
-#define MBOXTREE_DELETED (1<<1)
-#define MBOXTREE_SKIP_ROOT (1<<2)
+int mboxlist_allmbox(const char *prefix, mboxlist_cb *proc,
+                     void *rock, int incdel);
+#define MBOXTREE_TOMBSTONES    (1<<0)
+#define MBOXTREE_DELETED       (1<<1)
+#define MBOXTREE_SKIP_ROOT     (1<<2)
 #define MBOXTREE_SKIP_CHILDREN (1<<3)
 #define MBOXTREE_SKIP_PERSONAL (1<<4)
-#define MBOXTREE_PLUS_RACL (1<<5)
-int mboxlist_mboxtree(const char *mboxname, mboxlist_cb *proc, void *rock, int flags);
-int mboxlist_usermboxtree(const char *userid, mboxlist_cb *proc, void *rock, int flags);
-int mboxlist_usersubs(const char *userid, mboxlist_cb *proc, void *rock, int flags);
+#define MBOXTREE_PLUS_RACL     (1<<5)
+int mboxlist_mboxtree(const char *mboxname, mboxlist_cb *proc,
+                      void *rock, int flags);
+int mboxlist_usermboxtree(const char *userid, mboxlist_cb *proc,
+                          void *rock, int flags);
+int mboxlist_usersubs(const char *userid, mboxlist_cb *proc,
+                      void *rock, int flags);
 
 strarray_t *mboxlist_sublist(const char *userid);
 
@@ -264,7 +270,8 @@ int mboxlist_findsub(struct namespace *namespace,
                      int force);
 int mboxlist_findsubmulti(struct namespace *namespace,
                           const strarray_t *patterns, int isadmin,
-                          const char *userid, const struct auth_state *auth_state,
+                          const char *userid,
+                          const struct auth_state *auth_state,
                           findall_cb *proc, void *rock,
                           int force);
 
