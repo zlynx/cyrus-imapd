@@ -997,6 +997,7 @@ static int is_personalized(struct mailbox *mailbox,
                            const char *userid, struct buf *userdata)
 {
     if (cdata->comp_flags.shared) {
+        syslog(LOG_ERR, "XXX  is_personalized(): resource is shared");
         /* Lookup per-user calendar data */
         int r = mailbox_get_annotate_state(mailbox, cdata->dav.imap_uid, NULL);
 
@@ -1004,6 +1005,7 @@ static int is_personalized(struct mailbox *mailbox,
             mbname_t *mbname = NULL;
 
             if (mailbox->i.options & OPT_IMAP_SHAREDSEEN) {
+                syslog(LOG_ERR, "XXX  is_personalized(): shared seen");
                 /* No longer using per-user-data - use owner data */
                 mbname = mbname_from_intname(mailbox->name);
                 userid = mbname_userid(mbname);
@@ -1011,6 +1013,8 @@ static int is_personalized(struct mailbox *mailbox,
 
             r = mailbox_annotation_lookup(mailbox, cdata->dav.imap_uid,
                                           PER_USER_CAL_DATA, userid, userdata);
+            syslog(LOG_ERR, "XXX  is_personalized(): per user cal data: %d, %lu",
+                   r, buf_len(userdata));
             mbname_free(&mbname);
         }
 
@@ -1019,6 +1023,7 @@ static int is_personalized(struct mailbox *mailbox,
     }
     else if (!(mailbox->i.options & OPT_IMAP_SHAREDSEEN) &&
              !mboxname_userownsmailbox(userid, mailbox->name)) {
+        syslog(LOG_ERR, "XXX  is_personalized(): strip owner data");
         buf_init_ro_cstr(userdata, STRIP_OWNER_CAL_DATA);
         return 1;
     }
@@ -2466,6 +2471,7 @@ static void add_personal_data(icalcomponent *ical, struct buf *userdata)
     const char *icalstr;
     icalcomponent *vpatch;
 
+    syslog(LOG_ERR, "XXX  add_personal_data()");
     /* Parse the value and fetch the patch */
     dlist_parsemap(&dl, 1, 0, buf_base(userdata), buf_len(userdata));
     dlist_getatom(dl, "VPATCH", &icalstr);
@@ -2497,6 +2503,7 @@ EXPORTED icalcomponent *caldav_record_to_ical(struct mailbox *mailbox,
     if (userid && (namespace_calendar.allow & ALLOW_USERDATA)) {
         struct buf userdata = BUF_INITIALIZER;
 
+        syslog(LOG_ERR, "XXX  caldav_record_to_ical(): checking per user data");
         if (is_personalized(mailbox, cdata, httpd_userid, &userdata)) {
             add_personal_data(ical, &userdata);
         }
@@ -5578,6 +5585,7 @@ static int propfind_caldata(const xmlChar *name, xmlNsPtr ns,
         if (namespace_calendar.allow & ALLOW_USERDATA) {
             struct buf userdata = BUF_INITIALIZER;
 
+            syslog(LOG_ERR, "XXX  propfind_caldata(): checking for per-user data");
             if (is_personalized(fctx->mailbox, fctx->data,
                                 httpd_userid, &userdata)) {
                 if (!fctx->obj) fctx->obj = icalparser_parse_string(data);
