@@ -996,6 +996,8 @@ static int is_personalized(struct mailbox *mailbox,
                            const struct caldav_data *cdata,
                            const char *userid, struct buf *userdata)
 {
+    syslog(LOG_ERR, "XXX  is_personalized(%s, %u, %s)",
+           mailbox->name, cdata->dav.imap_uid, userid);
     if (cdata->comp_flags.shared) {
         syslog(LOG_ERR, "XXX  is_personalized(): resource is shared");
         /* Lookup per-user calendar data */
@@ -2605,6 +2607,7 @@ static int caldav_get(struct transaction_t *txn, struct mailbox *mailbox,
         if (namespace_calendar.allow & ALLOW_USERDATA) {
             struct buf userdata = BUF_INITIALIZER;
 
+            syslog(LOG_ERR, "XXX  caldav_get(): checking for per-user data");
             if (is_personalized(mailbox, cdata, httpd_userid, &userdata)) {
                 if (!ical) *obj = ical = record_to_ical(mailbox, record, NULL);
 
