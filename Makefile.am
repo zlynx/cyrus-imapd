@@ -1056,6 +1056,8 @@ imap_libcyrus_imap_la_SOURCES = \
 	imap/user.h \
 	imap/userdeny_db.c \
 	imap/userdeny.h \
+	imap/vcard_support.c \
+	imap/vcard_support.h \
 	imap/version.c \
 	imap/version.h \
 	imap/xstats.c \
@@ -1104,8 +1106,6 @@ imap_libcyrus_imap_la_SOURCES += \
 	imap/dav_util.h \
 	imap/ical_support.c \
 	imap/ical_support.h \
-	imap/vcard_support.c \
-	imap/vcard_support.h \
 	imap/webdav_db.c \
 	imap/webdav_db.h
 
